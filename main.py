@@ -340,6 +340,7 @@ class TextBoxItem(QGraphicsRectItem):
         super().__init__(parent)
         self.tb = tb
         self.pw, self.ph = pw, ph
+        self._updating = True  # block itemChange writeback during setup
         self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemSendsGeometryChanges)
         self.setCursor(Qt.SizeAllCursor)
         self.setAcceptHoverEvents(True)
@@ -351,6 +352,7 @@ class TextBoxItem(QGraphicsRectItem):
         self._res_start = None
         self._res_rect = None
         self.refresh()
+        self._updating = False
 
     def refresh(self, reposition=True):
         tb = self.tb
@@ -381,7 +383,7 @@ class TextBoxItem(QGraphicsRectItem):
     def _sync_text(self): self.tb.text = self.text_item.toPlainText()
 
     def itemChange(self, change, value):
-        if change == QGraphicsItem.ItemPositionHasChanged:
+        if change == QGraphicsItem.ItemPositionHasChanged and not self._updating:
             yo = self.data(0) or 0  # page y offset in scene
             self.tb.x_pct = value.x()/self.pw*100
             self.tb.y_pct = (value.y() - yo)/self.ph*100
@@ -499,8 +501,10 @@ class ReaderView(QGraphicsView):
             tb_items_for_page = []
             for tb in tb_map.get(p.id, []):
                 it = TextBoxItem(tb, pw, ph)
-                it.setPos(it.pos().x(), it.pos().y() + y_offset)
+                it._updating = True
                 it.setData(0, y_offset)
+                it.setPos(tb.x_pct/100*pw, y_offset + tb.y_pct/100*ph)
+                it._updating = False
                 self._scene.addItem(it)
                 self._tb_items.append(it)
                 tb_items_for_page.append(it)
@@ -519,7 +523,9 @@ class ReaderView(QGraphicsView):
             pix_item.setPos(x_off, yo)
             lbl.setPos(x_off + 4, yo - 20)
             for it in tb_items:
+                it._updating = True
                 it.setPos(it.pos().x() + x_off, it.pos().y())
+                it._updating = False
 
         self._max_page_width = max_width
         self._scene.setSceneRect(0, 0, max_width, y_offset)
@@ -634,8 +640,15 @@ class ReaderView(QGraphicsView):
                 it = TextBoxItem(tb, pw, ph)
                 # Position in scene coords
                 yo = next(yo for _, yo, _, _, pp, *__ in self._page_items if pp.id == p.id)
-                it.setPos(lx - tb.width_pct/100*pw/2, yo + ly - tb.height_pct/100*ph/2)
+                it._updating = True
                 it.setData(0, yo)
+                sx = lx - tb.width_pct/100*pw/2
+                sy = yo + ly - tb.height_pct/100*ph/2
+                it.setPos(sx, sy)
+                it._updating = False
+                # Store final position as percentages
+                tb.x_pct = sx/pw*100
+                tb.y_pct = (sy - yo)/ph*100
                 self._scene.addItem(it)
                 self._tb_items.append(it)
                 it.setSelected(True)
@@ -704,8 +717,10 @@ class ReaderView(QGraphicsView):
             setattr(tb, attr, getattr(src, attr))
         self._textboxes.append(tb)
         it = TextBoxItem(tb, pw, ph)
-        it.setPos(tb.x_pct/100*pw, yo + tb.y_pct/100*ph)
+        it._updating = True
         it.setData(0, yo)
+        it.setPos(tb.x_pct/100*pw, yo + tb.y_pct/100*ph)
+        it._updating = False
         self._scene.addItem(it)
         self._tb_items.append(it)
         it.setSelected(True)
