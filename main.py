@@ -354,10 +354,11 @@ class TextBoxItem(QGraphicsRectItem):
         self.refresh()
         self._updating = False
 
+    PAD = 8  # padding around text for grab zone
+
     def refresh(self, reposition=True):
         tb = self.tb
-        w, h = tb.width_pct/100*self.pw, tb.height_pct/100*self.ph
-        self.setRect(0, 0, w, h)
+        w = tb.width_pct/100*self.pw
         if reposition:
             x, y = tb.x_pct/100*self.pw, tb.y_pct/100*self.ph
             self.setPos(x, y)
@@ -373,14 +374,26 @@ class TextBoxItem(QGraphicsRectItem):
         font.setBold(tb.bold); font.setItalic(tb.italic)
         self.text_item.setFont(font)
         self.text_item.setDefaultTextColor(QColor(tb.font_color))
-        self.text_item.setTextWidth(w)
-        self.text_item.setPos(0, 0)
+        self.text_item.setTextWidth(w - self.PAD * 2)
+        self.text_item.setPos(self.PAD, self.PAD)
         if self.text_item.toPlainText() != tb.text:
             self.text_item.blockSignals(True)
             self.text_item.setPlainText(tb.text)
             self.text_item.blockSignals(False)
+        # Auto-fit height to text content + padding
+        text_h = self.text_item.boundingRect().height() + self.PAD * 2
+        h = max(tb.height_pct/100*self.ph, text_h)
+        self.setRect(0, 0, w, h)
+        tb.height_pct = h/self.ph*100
 
-    def _sync_text(self): self.tb.text = self.text_item.toPlainText()
+    def _sync_text(self):
+        self.tb.text = self.text_item.toPlainText()
+        # Auto-grow height if text overflows
+        text_h = self.text_item.boundingRect().height() + self.PAD * 2
+        r = self.rect()
+        if text_h > r.height():
+            self.setRect(0, 0, r.width(), text_h)
+            self.tb.height_pct = text_h/self.ph*100
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged and not self._updating:
@@ -416,7 +429,7 @@ class TextBoxItem(QGraphicsRectItem):
         if self._resizing:
             d=e.scenePos()-self._res_start
             w,h=max(30,self._res_rect.width()+d.x()),max(20,self._res_rect.height()+d.y())
-            self.setRect(0,0,w,h); self.text_item.setTextWidth(w)
+            self.setRect(0,0,w,h); self.text_item.setTextWidth(w - self.PAD * 2)
             self.tb.width_pct=w/self.pw*100; self.tb.height_pct=h/self.ph*100
             e.accept(); return
         super().mouseMoveEvent(e)
