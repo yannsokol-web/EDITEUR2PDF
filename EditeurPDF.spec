@@ -1,13 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
 
-has_icon = os.path.exists('Logo.ico')
+has_icon = os.path.exists('logoediteurpdf.ico')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('Logo.ico', '.')] if has_icon else [],
+    datas=[('logoediteurpdf.ico', '.')] if has_icon else [],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -34,7 +34,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['Logo.ico'] if has_icon else [],
+    icon=['logoediteurpdf.ico'] if has_icon else [],
 )
 coll = COLLECT(
     exe,

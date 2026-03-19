@@ -20,7 +20,7 @@ from PySide6.QtGui import (
     QFont, QDrag, QTextCursor
 )
 
-ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Logo.ico')
+ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logoediteurpdf.ico')
 
 C = {
     'bg': '#f0f2f5', 'surface': '#ffffff', 'border': '#d9d9d9',

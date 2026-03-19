@@ -2,6 +2,13 @@
 
 Éditeur PDF de bureau basé sur PySide6 et PyMuPDF.
 
+## Cloner le dépôt
+
+```bash
+git clone https://github.com/yannsokol-web/EDITEUR2PDF.git
+cd EDITEUR2PDF
+```
+
 ## Prérequis
 
 - Python 3.10+

@@ -33,8 +33,8 @@ set "VBS=%TEMP%\create_shortcut.vbs"
     echo sc.TargetPath = "%EXE_PATH%"
     echo sc.WorkingDirectory = "%INSTALL_DIR%"
     echo sc.Description = "Editeur PDF"
-    echo If CreateObject("Scripting.FileSystemObject"^).FileExists("%INSTALL_DIR%\Logo.ico"^) Then
-    echo     sc.IconLocation = "%INSTALL_DIR%\Logo.ico"
+    echo If CreateObject("Scripting.FileSystemObject"^).FileExists("%INSTALL_DIR%\logoediteurpdf.ico"^) Then
+    echo     sc.IconLocation = "%INSTALL_DIR%\logoediteurpdf.ico"
     echo End If
     echo sc.Save
 ) > "%VBS%"
