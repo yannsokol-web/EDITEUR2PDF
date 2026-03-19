@@ -1,7 +1,7 @@
 """
 Éditeur PDF – PySide6
 """
-import sys, os, uuid, fitz, weakref
+import sys, os, uuid, fitz
 fitz.TOOLS.mupdf_display_errors(False)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -42,15 +42,6 @@ def get_cached_doc(pdf_bytes):
         _pdf_doc_cache[key] = doc
     return doc
 
-def clear_doc_cache(pdf_bytes=None):
-    """Remove cached doc(s). If pdf_bytes given, only that one."""
-    if pdf_bytes is not None:
-        key = id(pdf_bytes)
-        doc = _pdf_doc_cache.pop(key, None)
-        if doc: doc.close()
-    else:
-        for doc in _pdf_doc_cache.values(): doc.close()
-        _pdf_doc_cache.clear()
 
 # ── Données ────────────────────────────────────────────────
 class PageData:
@@ -231,8 +222,6 @@ class PageCard(QFrame):
         self.del_btn.setStyleSheet(f"QPushButton{{background:{C['danger']};color:#fff;border:none;border-radius:13px;font-size:16px;font-weight:bold;}}QPushButton:hover{{background:{C['danger_hover']};}}")
         self.del_btn.clicked.connect(lambda: self.delete_clicked.emit(self.page_data.id))
         self.del_btn.hide()
-
-        # Insert button
 
         self._style()
 
@@ -925,7 +914,13 @@ class PreviewPanel(QFrame):
         self._pm = render_page_pixmap(self._pd.pdf_bytes, self._pd.page_index, self._render_scale)
         self._scene.clear()
         self._scene.addPixmap(self._pm)
-        self._scene.setSceneRect(0, 0, self._pm.width(), self._pm.height())
+        pw, ph = self._pm.width(), self._pm.height()
+        for tb in self._textboxes:
+            if tb.page_id == self._pd.id:
+                it = TextBoxItem(tb, pw, ph)
+                it.setFlags(QGraphicsItem.ItemIsSelectable)
+                self._scene.addItem(it)
+        self._scene.setSceneRect(0, 0, pw, ph)
         self._view.resetTransform(); self._view.scale(self._zoom, self._zoom)
 
     def _sync(self):
@@ -1175,13 +1170,13 @@ class MainWindow(QMainWindow):
     def _delete_page(self, pid):
         self.pages=[p for p in self.pages if p.id!=pid]
         self.textboxes=[t for t in self.textboxes if t.page_id!=pid]
-        self.selected_ids.discard(pid); self._rebuild_grid(); self._update_state(); self.preview.hide()
+        self.selected_ids.discard(pid); self._rebuild_grid(); self._update_state(); self.preview.hide(); self._preview_page_idx = None
 
     def _delete_selection(self):
         ids=set(self.selected_ids)
         self.pages=[p for p in self.pages if p.id not in ids]
         self.textboxes=[t for t in self.textboxes if t.page_id not in ids]
-        self.selected_ids.clear(); self._rebuild_grid(); self._update_state(); self.preview.hide()
+        self.selected_ids.clear(); self._rebuild_grid(); self._update_state(); self.preview.hide(); self._preview_page_idx = None
 
     def _browse(self):
         files,_=QFileDialog.getOpenFileNames(self, "Sélectionner des PDFs","","PDF (*.pdf)")
