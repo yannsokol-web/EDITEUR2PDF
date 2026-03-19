@@ -20,9 +20,6 @@ python main.py
 
 ## Compilation en exécutable (.exe)
 
-```bash
-pip install pyinstaller
-pyinstaller EditeurPDF.spec
-```
+Double-cliquez sur **`build.bat`** — il installe les dépendances et compile automatiquement.
 
-L'exécutable sera généré dans `dist/EditeurPDF/EditeurPDF.exe`.
+L'exécutable `dist/EditeurPDF.exe` peut ensuite être copié sur n'importe quel PC Windows.

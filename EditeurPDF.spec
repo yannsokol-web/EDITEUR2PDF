@@ -1,11 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 
+has_icon = os.path.exists('Logo.ico')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('Logo.ico', '.')],
+    datas=[('Logo.ico', '.')] if has_icon else [],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -19,8 +21,9 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='EditeurPDF',
     debug=False,
     bootloader_ignore_signals=False,
@@ -32,14 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['Logo.ico'],
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='EditeurPDF',
+    icon=['Logo.ico'] if has_icon else [],
 )
