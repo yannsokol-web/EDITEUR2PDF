@@ -22,4 +22,10 @@ python main.py
 
 Double-cliquez sur **`build.bat`** — il installe les dépendances et compile automatiquement.
 
-L'exécutable `dist/EditeurPDF.exe` peut ensuite être copié sur n'importe quel PC Windows.
+## Installation sur un PC
+
+1. Après compilation, double-cliquez sur **`install.bat`**
+2. L'application est copiée dans `%LOCALAPPDATA%\EditeurPDF`
+3. Un raccourci **EditeurPDF** apparaît sur le bureau
+
+Pour déployer sur d'autres machines : copiez le dossier `dist\EditeurPDF\` + `install.bat` sur le PC cible, puis lancez `install.bat`.

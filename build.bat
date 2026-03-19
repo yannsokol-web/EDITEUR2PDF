@@ -7,22 +7,15 @@ echo    Compilation de EditeurPDF
 echo ============================================
 echo.
 
-REM Verifier que Python est installe
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERREUR] Python non trouve dans le PATH.
-    echo Installez Python 3.10+ depuis https://www.python.org
     pause
     exit /b 1
 )
 
 echo [1/3] Installation des dependances...
 python -m pip install PySide6 PyMuPDF pyinstaller --quiet
-if errorlevel 1 (
-    echo [ERREUR] Echec de l installation des dependances.
-    pause
-    exit /b 1
-)
 echo       OK
 echo.
 
@@ -44,7 +37,11 @@ echo.
 
 echo ============================================
 echo    Termine !
-echo    Executable : dist\EditeurPDF.exe
+echo    Dossier : dist\EditeurPDF\
+echo    Executable : dist\EditeurPDF\EditeurPDF.exe
+echo.
+echo    Lancez install.bat pour creer un raccourci
+echo    bureau automatiquement.
 echo ============================================
 echo.
 pause
