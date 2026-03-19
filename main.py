@@ -1198,13 +1198,23 @@ class MainWindow(QMainWindow):
     def _delete_page(self, pid):
         self.pages=[p for p in self.pages if p.id!=pid]
         self.textboxes=[t for t in self.textboxes if t.page_id!=pid]
+        self._cleanup_cache()
         self.selected_ids.discard(pid); self._rebuild_grid(); self._update_state(); self.preview.hide(); self._preview_page_idx = None
 
     def _delete_selection(self):
         ids=set(self.selected_ids)
         self.pages=[p for p in self.pages if p.id not in ids]
         self.textboxes=[t for t in self.textboxes if t.page_id not in ids]
+        self._cleanup_cache()
         self.selected_ids.clear(); self._rebuild_grid(); self._update_state(); self.preview.hide(); self._preview_page_idx = None
+
+    def _cleanup_cache(self):
+        """Ferme et supprime les documents PDF qui ne sont plus référencés."""
+        live = {id(p.pdf_bytes) for p in self.pages}
+        for key in list(_pdf_doc_cache):
+            if key not in live:
+                _pdf_doc_cache[key].close()
+                del _pdf_doc_cache[key]
 
     def _browse(self):
         files,_=QFileDialog.getOpenFileNames(self, "Sélectionner des PDFs","","PDF (*.pdf)")
