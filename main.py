@@ -1052,7 +1052,7 @@ class MainWindow(QMainWindow):
     def _launch_update(self, toast_label):
         toast_label.hide()
         if os.path.exists(INSTALLER_PATH):
-            subprocess.Popen([INSTALLER_PATH], shell=True)
+            subprocess.Popen([INSTALLER_PATH])
             QTimer.singleShot(500, self.close)
         else:
             self.toast.show("Installateur introuvable sur le serveur.", 'error')
