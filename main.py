@@ -1,7 +1,13 @@
 """
 Éditeur PDF – PySide6
 """
-import sys, os, uuid, fitz
+VERSION = "1.0"
+UPDATE_URL = "https://raw.githubusercontent.com/yannsokol-web/EDITEUR2PDF/main/version.txt"
+INSTALLER_PATH = r"\\\Media\03 - Logiciels & Divers\07 - Logiciel Yann\InstallEditeurPDF.exe"
+
+import sys, os, uuid, subprocess, threading
+from urllib.request import urlopen
+import fitz
 fitz.TOOLS.mupdf_display_errors(False)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -1002,6 +1008,40 @@ class MainWindow(QMainWindow):
         self._build_toolbar(); self._build_central(); self._build_reader_nav(); self._build_tb_props()
         self.toast = ToastManager(self)
         self._update_state()
+        self._check_update()
+
+    def _check_update(self):
+        def _fetch():
+            try:
+                resp = urlopen(UPDATE_URL, timeout=5)
+                remote = resp.read().decode().strip()
+                if remote != VERSION:
+                    QTimer.singleShot(0, lambda: self._show_update_toast(remote))
+            except Exception:
+                pass
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _show_update_toast(self, remote_version):
+        msg = f"Mise à jour disponible (v{remote_version})"
+        t = QLabel(msg, self)
+        t.setCursor(Qt.PointingHandCursor)
+        t.setStyleSheet(
+            f"background:{C['primary']};color:#fff;padding:12px 22px;"
+            f"border-radius:8px;font-size:13px;font-weight:bold;"
+        )
+        t.setToolTip("Cliquez pour lancer la mise à jour")
+        t.adjustSize()
+        t.move(self.width() - t.width() - 24, self.height() - t.height() - 24)
+        t.show(); t.raise_()
+        t.mousePressEvent = lambda e: self._launch_update(t)
+
+    def _launch_update(self, toast_label):
+        toast_label.hide()
+        if os.path.exists(INSTALLER_PATH):
+            subprocess.Popen([INSTALLER_PATH], shell=True)
+            QTimer.singleShot(500, self.close)
+        else:
+            self.toast.show("Installateur introuvable sur le serveur.", 'error')
 
     def _build_toolbar(self):
         tb=QWidget(); tb.setFixedHeight(56)

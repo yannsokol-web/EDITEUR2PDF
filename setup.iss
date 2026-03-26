@@ -1,6 +1,7 @@
 [Setup]
 AppName=Editeur PDF
 AppVersion=1.0
+AppVerName=Editeur PDF 1.0
 AppPublisher=Editeur PDF
 DefaultDirName={localappdata}\EditeurPDF
 DefaultGroupName=Editeur PDF
