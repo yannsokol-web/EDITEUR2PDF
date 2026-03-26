@@ -1,5 +1,12 @@
 """
 Éditeur PDF – PySide6
+
+Copyright (c) 2026 Yann Sokol. Tous droits réservés.
+
+Ce logiciel est la propriété exclusive de Yann Sokol.
+Toute reproduction, distribution, modification ou utilisation non autorisée
+de ce logiciel, en tout ou en partie, est strictement interdite sans
+l'autorisation écrite préalable de l'auteur.
 """
 VERSION = "1.0"
 UPDATE_URL = "https://raw.githubusercontent.com/yannsokol-web/EDITEUR2PDF/main/version.txt"
@@ -13,7 +20,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QScrollArea, QFrame,
     QSlider, QComboBox, QSpinBox, QCheckBox, QColorDialog,
-    QDialog, QDialogButtonBox, QGraphicsView, QGraphicsScene,
+    QDialog, QDialogButtonBox, QMessageBox, QGraphicsView, QGraphicsScene,
     QGraphicsRectItem, QGraphicsTextItem,
     QGraphicsItem, QStackedWidget, QLayout, QSplitter
 )
@@ -1071,7 +1078,25 @@ class MainWindow(QMainWindow):
         self.exp_btn=QPushButton("Exporter PDF"); self.exp_btn.setCursor(Qt.PointingHandCursor)
         self.exp_btn.setStyleSheet(f"QPushButton{{background:{C['primary']};color:#fff;padding:8px 18px;border-radius:8px;font-size:14px;border:none;}}QPushButton:hover{{background:{C['primary_hover']};}}QPushButton:disabled{{background:#aaa;}}")
         self.exp_btn.setEnabled(False); self.exp_btn.clicked.connect(self._export_pdf); h.addWidget(self.exp_btn)
+        about_btn=QPushButton("?"); about_btn.setCursor(Qt.PointingHandCursor); about_btn.setFixedSize(32,32)
+        about_btn.setToolTip("À propos")
+        about_btn.setStyleSheet(f"QPushButton{{background:none;color:{C['text2']};border:1px solid {C['border']};border-radius:16px;font-size:16px;font-weight:bold;}}QPushButton:hover{{border-color:{C['primary']};color:{C['primary']};}}")
+        about_btn.clicked.connect(self._show_about); h.addWidget(about_btn)
         self.setMenuWidget(tb)
+
+    def _show_about(self):
+        QMessageBox.about(self, "À propos — Éditeur PDF",
+            f"<h2>Éditeur PDF v{VERSION}</h2>"
+            f"<p><b>Auteur :</b> Yann Sokol</p>"
+            f"<p>&copy; 2026 Yann Sokol. Tous droits réservés.</p>"
+            f"<hr>"
+            f"<p style='font-size:11px;color:#666;'>"
+            f"Ce logiciel est la propriété exclusive de Yann Sokol. "
+            f"Toute reproduction, distribution, modification ou utilisation "
+            f"non autorisée de ce logiciel, en tout ou en partie, est "
+            f"strictement interdite sans l'autorisation écrite préalable "
+            f"de l'auteur.</p>"
+        )
 
     def _build_central(self):
         self.stack=QStackedWidget(); self.setCentralWidget(self.stack)
