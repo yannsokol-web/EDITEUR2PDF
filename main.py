@@ -398,7 +398,8 @@ class TextBoxItem(QGraphicsRectItem):
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged and not self._updating:
             yo = self.data(0) or 0  # page y offset in scene
-            self.tb.x_pct = value.x()/self.pw*100
+            xo = self.data(1) or 0  # page x offset (centering)
+            self.tb.x_pct = (value.x() - xo)/self.pw*100
             self.tb.y_pct = (value.y() - yo)/self.ph*100
         return super().itemChange(change, value)
 
@@ -450,7 +451,7 @@ class ReaderView(QGraphicsView):
 
     PAGE_GAP = 40  # pixels between pages
 
-    LOWRES_SCALE = 0.5   # fast placeholder
+    LOWRES_SCALE = 1.0   # fast placeholder (was 0.5 – too blurry)
     HIRES_SCALE = 3.0    # quality render
 
     def __init__(self, parent=None):
@@ -508,7 +509,7 @@ class ReaderView(QGraphicsView):
             pw, ph = target_w, target_h
             max_width = max(max_width, pw)
 
-            pix_item = self._scene.addPixmap(pm.scaled(pw, ph, Qt.KeepAspectRatio, Qt.FastTransformation))
+            pix_item = self._scene.addPixmap(pm.scaled(pw, ph, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             pix_item.setPos(0, y_offset)
 
             tb_items_for_page = []
@@ -537,6 +538,7 @@ class ReaderView(QGraphicsView):
             lbl.setPos(x_off + 4, yo - 20)
             for it in tb_items:
                 it._updating = True
+                it.setData(1, x_off)  # store x offset for itemChange
                 it.setPos(it.pos().x() + x_off, it.pos().y())
                 it._updating = False
 
@@ -636,10 +638,12 @@ class ReaderView(QGraphicsView):
         self.setCursor(Qt.CrossCursor if v else Qt.ArrowCursor)
 
     def _find_page_at(self, scene_pos):
-        """Find which page a scene position belongs to. Returns (page_data, local_x, local_y, pw, ph) or None."""
+        """Find which page a scene position belongs to. Returns (page_data, local_x, local_y, pw, ph, x_off) or None."""
+        mw = getattr(self, '_max_page_width', 0)
         for _, yo, pw, ph, p, *__ in self._page_items:
-            if yo <= scene_pos.y() <= yo + ph and 0 <= scene_pos.x() <= pw:
-                return p, scene_pos.x(), scene_pos.y() - yo, pw, ph
+            x_off = (mw - pw) / 2 if mw else 0
+            if yo <= scene_pos.y() <= yo + ph and x_off <= scene_pos.x() <= x_off + pw:
+                return p, scene_pos.x() - x_off, scene_pos.y() - yo, pw, ph, x_off
         return None
 
     def mousePressEvent(self, e):
@@ -647,7 +651,7 @@ class ReaderView(QGraphicsView):
             sp = self.mapToScene(e.position().toPoint())
             hit = self._find_page_at(sp)
             if hit:
-                p, lx, ly, pw, ph = hit
+                p, lx, ly, pw, ph, x_off = hit
                 tb = TextBoxData(p.id, lx/pw*100, ly/ph*100)
                 self._textboxes.append(tb)
                 it = TextBoxItem(tb, pw, ph)
@@ -655,12 +659,13 @@ class ReaderView(QGraphicsView):
                 yo = next(yo for _, yo, _, _, pp, *__ in self._page_items if pp.id == p.id)
                 it._updating = True
                 it.setData(0, yo)
-                sx = lx - tb.width_pct/100*pw/2
+                it.setData(1, x_off)
+                sx = x_off + lx - tb.width_pct/100*pw/2
                 sy = yo + ly - tb.height_pct/100*ph/2
                 it.setPos(sx, sy)
                 it._updating = False
                 # Store final position as percentages
-                tb.x_pct = sx/pw*100
+                tb.x_pct = (sx - x_off)/pw*100
                 tb.y_pct = (sy - yo)/ph*100
                 self._scene.addItem(it)
                 self._tb_items.append(it)
@@ -725,6 +730,8 @@ class ReaderView(QGraphicsView):
         idx = self.cur
         p = self._pages[idx]
         _, yo, pw, ph, *_ = self._page_items[idx]
+        mw = getattr(self, '_max_page_width', 0)
+        x_off = (mw - pw) / 2 if mw else 0
         tb = TextBoxData(p.id, src.x_pct+2, src.y_pct+2)
         for attr in ('width_pct','height_pct','text','font_family','font_size','font_color','bold','italic','border_color','border_width','bg_color'):
             setattr(tb, attr, getattr(src, attr))
@@ -732,7 +739,8 @@ class ReaderView(QGraphicsView):
         it = TextBoxItem(tb, pw, ph)
         it._updating = True
         it.setData(0, yo)
-        it.setPos(tb.x_pct/100*pw, yo + tb.y_pct/100*ph)
+        it.setData(1, x_off)
+        it.setPos(x_off + tb.x_pct/100*pw, yo + tb.y_pct/100*ph)
         it._updating = False
         self._scene.addItem(it)
         self._tb_items.append(it)
@@ -908,21 +916,25 @@ class PreviewPanel(QFrame):
         self._hires_timer=QTimer(self); self._hires_timer.setSingleShot(True)
         self._hires_timer.timeout.connect(self._upgrade_preview)
 
-    def set_page(self, pd, idx, total, textboxes=None):
-        self._pd = pd
-        self._textboxes = textboxes or []
-        self.info.setText(f"Page {idx+1} / {total} — {pd.label}")
-        self._render_scale = 2.0
-        self._pm = render_page_pixmap(pd.pdf_bytes, pd.page_index, self._render_scale)
+    def _build_scene(self):
+        """Build scene from current pixmap and textboxes (shared by set_page and _upgrade_preview)."""
         self._scene.clear()
         self._scene.addPixmap(self._pm)
         pw, ph = self._pm.width(), self._pm.height()
         for tb in self._textboxes:
-            if tb.page_id == pd.id:
+            if tb.page_id == self._pd.id:
                 it = TextBoxItem(tb, pw, ph)
                 it.setFlags(QGraphicsItem.ItemIsSelectable)  # read-only in preview
                 self._scene.addItem(it)
         self._scene.setSceneRect(0, 0, pw, ph)
+
+    def set_page(self, pd, idx, total, textboxes=None):
+        self._pd = pd
+        self._textboxes = textboxes or []
+        self.info.setText(f"Page {idx+1} / {total} — {pd.label}")
+        self._render_scale = 3.0
+        self._pm = render_page_pixmap(pd.pdf_bytes, pd.page_index, self._render_scale)
+        self._build_scene()
         self._zoom = 1.0; self._zs.setValue(100)
         self._view.resetTransform()
         self._view.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
@@ -936,19 +948,11 @@ class PreviewPanel(QFrame):
 
     def _upgrade_preview(self):
         if not self._pd: return
-        needed = max(2.0, self._zoom * 3.0)
+        needed = max(3.0, self._zoom * 3.0)
         if needed <= self._render_scale: return
         self._render_scale = min(needed, 8.0)
         self._pm = render_page_pixmap(self._pd.pdf_bytes, self._pd.page_index, self._render_scale)
-        self._scene.clear()
-        self._scene.addPixmap(self._pm)
-        pw, ph = self._pm.width(), self._pm.height()
-        for tb in self._textboxes:
-            if tb.page_id == self._pd.id:
-                it = TextBoxItem(tb, pw, ph)
-                it.setFlags(QGraphicsItem.ItemIsSelectable)
-                self._scene.addItem(it)
-        self._scene.setSceneRect(0, 0, pw, ph)
+        self._build_scene()
         self._view.resetTransform(); self._view.scale(self._zoom, self._zoom)
 
     def _sync(self):
@@ -1139,13 +1143,12 @@ class MainWindow(QMainWindow):
         for path in paths:
             try:
                 with open(path,'rb') as f: data=f.read()
-                doc=open_pdf(data); name=os.path.basename(path)
+                doc=get_cached_doc(data); name=os.path.basename(path)
                 for i in range(len(doc)):
                     pix=doc[i].get_pixmap(matrix=fitz.Matrix(0.5,0.5),alpha=False)
                     img=QImage(pix.samples,pix.width,pix.height,pix.stride,QImage.Format_RGB888)
                     self.pages.insert(at_index+count, PageData(data,i,f"{name} – p.{i+1}",QPixmap.fromImage(img)))
                     count+=1
-                doc.close()
             except Exception as e:
                 errors.append(f"{os.path.basename(path)}: {e}")
         if count:
