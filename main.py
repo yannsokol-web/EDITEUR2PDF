@@ -473,6 +473,9 @@ class ReaderView(QGraphicsView):
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setSingleShot(True)
         self._scroll_timer.timeout.connect(self._emit_current_page)
+        # Hand-drag panning by default
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setCursor(Qt.OpenHandCursor)
 
     def set_data(self, pages, textboxes, start_idx=0):
         self._pages = pages
@@ -635,7 +638,12 @@ class ReaderView(QGraphicsView):
 
     def set_placing(self, v):
         self._placing = v
-        self.setCursor(Qt.CrossCursor if v else Qt.ArrowCursor)
+        if v:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CrossCursor)
+        else:
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.setCursor(Qt.OpenHandCursor)
 
     def _find_page_at(self, scene_pos):
         """Find which page a scene position belongs to. Returns (page_data, local_x, local_y, pw, ph, x_off) or None."""
@@ -675,7 +683,8 @@ class ReaderView(QGraphicsView):
                 tc.movePosition(QTextCursor.MoveOperation.End)
                 it.text_item.setTextCursor(tc)
                 self._placing = False
-                self.setCursor(Qt.ArrowCursor)
+                self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+                self.setCursor(Qt.OpenHandCursor)
                 self.tb_selected.emit(tb)
                 w = self.window()
                 if hasattr(w, '_on_tb_placed'):

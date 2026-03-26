@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 build/
 dist/
+installer_output/
 .claude/
 skills-lock.json
