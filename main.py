@@ -1006,8 +1006,11 @@ class PreviewPanel(QFrame):
 #  MainWindow
 # ══════════════════════════════════════════════════════════════
 class MainWindow(QMainWindow):
+    _update_available = Signal(str)
+
     def __init__(self):
         super().__init__()
+        self._update_available.connect(self._show_update_toast)
         self.setWindowTitle("Éditeur PDF")
         if os.path.exists(ICON_PATH): self.setWindowIcon(QIcon(ICON_PATH))
         self.setMinimumSize(900, 600); self.resize(1200, 800)
@@ -1027,7 +1030,7 @@ class MainWindow(QMainWindow):
                 resp = urlopen(UPDATE_URL, timeout=5)
                 remote = resp.read().decode().strip()
                 if remote != VERSION:
-                    QTimer.singleShot(0, lambda: self._show_update_toast(remote))
+                    self._update_available.emit(remote)
             except Exception:
                 pass
         threading.Thread(target=_fetch, daemon=True).start()

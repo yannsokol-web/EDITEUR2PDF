@@ -25,6 +25,7 @@ Name: "french"; MessagesFile: "compiler:Languages\French.isl"
 Source: "dist\EditeurPDF\EditeurPDF.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\EditeurPDF\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "logoediteurpdf.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "config.ini"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{userdesktop}\Editeur PDF"; Filename: "{app}\EditeurPDF.exe"; IconFilename: "{app}\logoediteurpdf.ico"; WorkingDir: "{app}"
