@@ -10,9 +10,8 @@ l'autorisation écrite préalable de l'auteur.
 """
 VERSION = "1.0"
 UPDATE_URL = "https://raw.githubusercontent.com/yannsokol-web/EDITEUR2PDF/main/version.txt"
-INSTALLER_PATH = r"\\\Media\03 - Logiciels & Divers\07 - Logiciel Yann\InstallEditeurPDF.exe"
 
-import sys, os, uuid, subprocess, threading
+import sys, os, uuid, subprocess, threading, configparser
 from urllib.request import urlopen
 import fitz
 fitz.TOOLS.mupdf_display_errors(False)
@@ -33,7 +32,12 @@ from PySide6.QtGui import (
     QFont, QDrag, QTextCursor
 )
 
-ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logoediteurpdf.ico')
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+ICON_PATH = os.path.join(_APP_DIR, 'logoediteurpdf.ico')
+
+_cfg = configparser.ConfigParser()
+_cfg.read(os.path.join(_APP_DIR, 'config.ini'), encoding='utf-8')
+INSTALLER_PATH = _cfg.get('update', 'installer_path', fallback='')
 
 C = {
     'bg': '#f0f2f5', 'surface': '#ffffff', 'border': '#d9d9d9',

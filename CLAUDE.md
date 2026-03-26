@@ -14,7 +14,7 @@ Quand le code source est modifié et prêt à être déployé :
 3. Mettre à jour `AppVersion` dans `setup.iss` avec la même valeur
 4. Push sur GitHub
 5. Rebuild avec `build.bat`
-6. Copier `installer_output\InstallEditeurPDF.exe` sur `\\\Media\03 - Logiciels & Divers\07 - Logiciel Yann\`
+6. Copier `installer_output\InstallEditeurPDF.exe` sur le serveur réseau (chemin défini dans `config.ini`)
 
 **Important** : les 3 valeurs (main.py, version.txt, setup.iss) doivent toujours être synchronisées.
 
@@ -23,4 +23,10 @@ Quand le code source est modifié et prêt à être déployé :
 - Au lancement, l'app fetch `version.txt` sur GitHub (raw.githubusercontent.com)
 - Compare avec `VERSION` dans main.py (version compilée dans l'exe)
 - Si différent → toast cliquable proposant la mise à jour
-- Lance l'installateur depuis le chemin UNC : `\\\Media\03 - Logiciels & Divers\07 - Logiciel Yann\InstallEditeurPDF.exe`
+- Le chemin de l'installateur est lu depuis `config.ini` (non versionné, contient le chemin réseau)
+
+## Configuration
+
+- `config.ini` : fichier local (gitignored) contenant le chemin réseau de l'installateur
+- `config.ini.example` : template versionné sans infos sensibles
+- Le `config.ini` doit être inclus dans le build PyInstaller pour être embarqué dans l'exe
