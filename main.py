@@ -9,10 +9,10 @@ de ce logiciel, en tout ou en partie, est strictement interdite sans
 l'autorisation écrite préalable de l'auteur.
 """
 VERSION = "1.1"
-UPDATE_URL = "https://raw.githubusercontent.com/yannsokol-web/EDITEUR2PDF/main/version.txt"
+UPDATE_URL = "https://api.github.com/repos/yannsokol-web/EDITEUR2PDF/releases/latest"
 
-import sys, os, uuid, subprocess, threading, configparser, tempfile
-from urllib.request import urlopen, urlretrieve
+import sys, os, uuid, subprocess, threading, configparser, tempfile, json
+from urllib.request import urlopen, urlretrieve, Request
 import fitz
 fitz.TOOLS.mupdf_display_errors(False)
 from PySide6.QtWidgets import (
@@ -1031,9 +1031,11 @@ class MainWindow(QMainWindow):
     def _check_update(self):
         def _fetch():
             try:
-                resp = urlopen(UPDATE_URL, timeout=5)
-                remote = resp.read().decode().strip()
-                if remote != VERSION:
+                req = Request(UPDATE_URL, headers={"Accept": "application/vnd.github+json"})
+                resp = urlopen(req, timeout=5)
+                data = json.loads(resp.read().decode())
+                remote = data.get("tag_name", "").lstrip("v")
+                if remote and remote != VERSION:
                     self._update_available.emit(remote)
             except Exception:
                 pass
