@@ -8,7 +8,7 @@ Toute reproduction, distribution, modification ou utilisation non autorisée
 de ce logiciel, en tout ou en partie, est strictement interdite sans
 l'autorisation écrite préalable de l'auteur.
 """
-VERSION = "1.0"
+VERSION = "1.1"
 UPDATE_URL = "https://raw.githubusercontent.com/yannsokol-web/EDITEUR2PDF/main/version.txt"
 
 import sys, os, uuid, subprocess, threading, configparser, tempfile
@@ -1351,6 +1351,10 @@ class MainWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             out=fitz.open()
+            # Font size in editor is in Qt points rendered on a HIRES_SCALE-enlarged page.
+            # Scale it down so the exported PDF text matches the editor appearance.
+            dpi = QApplication.primaryScreen().logicalDotsPerInch()
+            font_scale = dpi / 72.0 / ReaderView.HIRES_SCALE
             for pd in plist:
                 src=get_cached_doc(pd.pdf_bytes)
                 out.insert_pdf(src,from_page=pd.page_index,to_page=pd.page_index)
@@ -1368,7 +1372,8 @@ class MainWindow(QMainWindow):
                     if 'Times' in tb.font_family or 'Georgia' in tb.font_family: fn="tiro"
                     elif 'Courier' in tb.font_family: fn="cour"
                     tr=fitz.Rect(x+2,y+2,x+w-2,y+h-2)
-                    op.insert_textbox(tr,tb.text,fontsize=tb.font_size,fontname=fn,color=self._hex2c(tb.font_color))
+                    pdf_fs=tb.font_size*font_scale
+                    op.insert_textbox(tr,tb.text,fontsize=pdf_fs,fontname=fn,color=self._hex2c(tb.font_color))
             out.save(path); out.close()
             self.toast.show(f"Export réussi ({len(plist)} pages) !", 'success')
         except Exception as e: self.toast.show(f"Erreur export: {e}", 'error')
