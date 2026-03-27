@@ -11,8 +11,8 @@ l'autorisation écrite préalable de l'auteur.
 VERSION = "1.0"
 UPDATE_URL = "https://raw.githubusercontent.com/yannsokol-web/EDITEUR2PDF/main/version.txt"
 
-import sys, os, uuid, subprocess, threading, configparser
-from urllib.request import urlopen
+import sys, os, uuid, subprocess, threading, configparser, tempfile
+from urllib.request import urlopen, urlretrieve
 import fitz
 fitz.TOOLS.mupdf_display_errors(False)
 from PySide6.QtWidgets import (
@@ -1007,10 +1007,14 @@ class PreviewPanel(QFrame):
 # ══════════════════════════════════════════════════════════════
 class MainWindow(QMainWindow):
     _update_available = Signal(str)
+    _update_downloaded = Signal(str)
+    _update_download_failed = Signal()
 
     def __init__(self):
         super().__init__()
         self._update_available.connect(self._show_update_toast)
+        self._update_downloaded.connect(self._on_update_downloaded)
+        self._update_download_failed.connect(self._on_update_download_failed)
         self.setWindowTitle("Éditeur PDF")
         if os.path.exists(ICON_PATH): self.setWindowIcon(QIcon(ICON_PATH))
         self.setMinimumSize(900, 600); self.resize(1200, 800)
@@ -1051,11 +1055,25 @@ class MainWindow(QMainWindow):
 
     def _launch_update(self, toast_label):
         toast_label.hide()
-        if os.path.exists(INSTALLER_PATH):
-            subprocess.Popen([INSTALLER_PATH])
-            QTimer.singleShot(500, self.close)
-        else:
-            self.toast.show("Installateur introuvable sur le serveur.", 'error')
+        self.toast.show("Téléchargement de la mise à jour...", 'info')
+        download_url = "https://github.com/yannsokol-web/EDITEUR2PDF/releases/latest/download/InstallEditeurPDF.exe"
+
+        def _download():
+            try:
+                tmp = os.path.join(tempfile.gettempdir(), "InstallEditeurPDF.exe")
+                urlretrieve(download_url, tmp)
+                self._update_downloaded.emit(tmp)
+            except Exception:
+                self._update_download_failed.emit()
+
+        threading.Thread(target=_download, daemon=True).start()
+
+    def _on_update_downloaded(self, path):
+        subprocess.Popen([path])
+        QTimer.singleShot(500, self.close)
+
+    def _on_update_download_failed(self):
+        self.toast.show("Échec du téléchargement de la mise à jour.", 'error')
 
     def _build_toolbar(self):
         tb=QWidget(); tb.setFixedHeight(56)
