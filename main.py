@@ -8,7 +8,7 @@ Toute reproduction, distribution, modification ou utilisation non autorisée
 de ce logiciel, en tout ou en partie, est strictement interdite sans
 l'autorisation écrite préalable de l'auteur.
 """
-VERSION = "1.2"
+VERSION = "1.3"
 UPDATE_URL = "https://api.github.com/repos/yannsokol-web/EDITEUR2PDF/releases/latest"
 
 import sys, os, uuid, subprocess, threading, configparser, tempfile, json
@@ -104,7 +104,7 @@ def open_pdf(data):
         return fitz.open(stream=clean_data, filetype="pdf")
 
 def render_page_pixmap(pdf_bytes, page_index, scale=2.0):
-    """Render a PDF page to QPixmap at given scale."""
+    """Render a PDF page to QPixmap at given scale (raw pixels, no DPR)."""
     doc = get_cached_doc(pdf_bytes)
     pix = doc[page_index].get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
     img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
@@ -490,6 +490,11 @@ class ReaderView(QGraphicsView):
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setSingleShot(True)
         self._scroll_timer.timeout.connect(self._emit_current_page)
+        # Background pre-cache: renders one page per tick at HIRES
+        self._precache_timer = QTimer(self)
+        self._precache_timer.setInterval(50)
+        self._precache_timer.timeout.connect(self._precache_step)
+        self._precache_idx = 0
         # Hand-drag panning by default
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setCursor(Qt.OpenHandCursor)
@@ -499,6 +504,7 @@ class ReaderView(QGraphicsView):
         self._textboxes = textboxes
         self._zoom = 1.0
         self._start_idx = start_idx
+        self._precache_timer.stop()
         # Reset hi-res cache to avoid stale oversized pixmaps
         for p in pages:
             p.hires = None
@@ -568,6 +574,11 @@ class ReaderView(QGraphicsView):
         # Defer fit-to-width to next event loop so viewport has correct size
         QTimer.singleShot(0, self._fit_zoom)
 
+    def _screen_dpr(self):
+        """Device pixel ratio for HiDPI support."""
+        screen = self.screen()
+        return screen.devicePixelRatio() if screen else 1.0
+
     def _get_pixmap(self, p, scale):
         if p.hires and p.hires_scale >= scale:
             return p.hires
@@ -595,20 +606,56 @@ class ReaderView(QGraphicsView):
             w._sync_zoom_display()
 
     def _schedule_hires(self):
-        self._hires_timer.start(100)
+        self._hires_timer.start(150)
 
-    def _upgrade_visible(self):
-        """Upgrade only visible pages to high-res."""
+    def _apply_hires_pixmap(self, pix_item, p, scale):
+        """Set a hi-res pixmap on a scene item, adjusting DPR to keep layout stable."""
+        pm = self._get_pixmap(p, scale)
+        pm_display = QPixmap(pm)
+        pm_display.setDevicePixelRatio(scale / self.HIRES_SCALE)
+        pix_item.setPixmap(pm_display)
+
+    def _flush_cached(self):
+        """Instantly apply already-cached HIRES pixmaps to all visible pages."""
         vp = self.mapToScene(self.viewport().rect()).boundingRect()
-        margin = vp.height()  # pre-render one screen above/below
+        margin = vp.height()
         for pix_item, yo, pw, ph, p, *_ in self._page_items:
             if yo + ph < vp.top() - margin or yo > vp.bottom() + margin:
                 continue
-            if p.hires_scale >= self.HIRES_SCALE:
+            if p.hires and p.hires_scale >= self.HIRES_SCALE:
+                pm_display = QPixmap(p.hires)
+                pm_display.setDevicePixelRatio(p.hires_scale / self.HIRES_SCALE)
+                pix_item.setPixmap(pm_display)
+
+    def _upgrade_visible(self):
+        """Upgrade visible pages to high-res, adapting scale to zoom + screen DPR."""
+        dpr = self._screen_dpr()
+        needed = max(self.HIRES_SCALE, self._zoom * self.HIRES_SCALE * dpr)
+        needed = min(needed, 8.0)
+        vp = self.mapToScene(self.viewport().rect()).boundingRect()
+        margin = vp.height()
+        for pix_item, yo, pw, ph, p, *_ in self._page_items:
+            if yo + ph < vp.top() - margin or yo > vp.bottom() + margin:
                 continue
-            pm = self._get_pixmap(p, self.HIRES_SCALE)
-            pix_item.setPixmap(pm)
-            QApplication.processEvents()  # keep UI responsive
+            if p.hires_scale >= needed:
+                continue
+            self._apply_hires_pixmap(pix_item, p, needed)
+            QApplication.processEvents()
+        # Start background pre-cache of remaining pages at HIRES_SCALE
+        if not self._precache_timer.isActive():
+            self._precache_idx = 0
+            self._precache_timer.start()
+
+    def _precache_step(self):
+        """Pre-cache one page at HIRES_SCALE per tick, then apply it to the scene."""
+        while self._precache_idx < len(self._page_items):
+            pix_item, yo, pw, ph, p, *_ = self._page_items[self._precache_idx]
+            self._precache_idx += 1
+            if p.hires_scale >= self.HIRES_SCALE:
+                continue  # already cached, skip to next
+            self._apply_hires_pixmap(pix_item, p, self.HIRES_SCALE)
+            return  # one page per tick to keep UI responsive
+        self._precache_timer.stop()
 
     def _emit_current_page(self):
         """Determine which page is most visible and emit signal."""
@@ -716,6 +763,7 @@ class ReaderView(QGraphicsView):
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
+            old_zoom = self._zoom
             f = 1.15 if e.angleDelta().y() > 0 else 1/1.15
             self._zoom = max(0.25, min(5.0, self._zoom * f))
             self.resetTransform()
@@ -723,6 +771,9 @@ class ReaderView(QGraphicsView):
             w = self.window()
             if hasattr(w, '_sync_zoom_display'):
                 w._sync_zoom_display()
+            if self._zoom < old_zoom:
+                self._flush_cached()   # instant: apply already-rendered HIRES
+            self._schedule_hires()     # debounced: render anything still missing
             e.accept()
         else:
             super().wheelEvent(e)
@@ -974,7 +1025,8 @@ class PreviewPanel(QFrame):
 
     def _upgrade_preview(self):
         if not self._pd: return
-        needed = max(3.0, self._zoom * 3.0)
+        dpr = self.screen().devicePixelRatio() if self.screen() else 1.0
+        needed = max(3.0, self._zoom * 3.0 * dpr)
         if needed <= self._render_scale: return
         self._render_scale = min(needed, 8.0)
         self._pm = render_page_pixmap(self._pd.pdf_bytes, self._pd.page_index, self._render_scale)
