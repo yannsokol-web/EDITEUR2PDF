@@ -8,7 +8,7 @@ Toute reproduction, distribution, modification ou utilisation non autorisée
 de ce logiciel, en tout ou en partie, est strictement interdite sans
 l'autorisation écrite préalable de l'auteur.
 """
-VERSION = "1.1"
+VERSION = "1.2"
 UPDATE_URL = "https://api.github.com/repos/yannsokol-web/EDITEUR2PDF/releases/latest"
 
 import sys, os, uuid, subprocess, threading, configparser, tempfile, json
@@ -1352,11 +1352,16 @@ class MainWindow(QMainWindow):
     def _do_export(self, plist, path):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
+            # Sync text from any active TextBoxItem editors before exporting
+            if hasattr(self, 'reader') and hasattr(self.reader, '_tb_items'):
+                for it in self.reader._tb_items:
+                    it.tb.text = it.text_item.toPlainText()
             out=fitz.open()
             # Font size in editor is in Qt points rendered on a HIRES_SCALE-enlarged page.
             # Scale it down so the exported PDF text matches the editor appearance.
             dpi = QApplication.primaryScreen().logicalDotsPerInch()
             font_scale = dpi / 72.0 / ReaderView.HIRES_SCALE
+            tb_count = 0
             for pd in plist:
                 src=get_cached_doc(pd.pdf_bytes)
                 out.insert_pdf(src,from_page=pd.page_index,to_page=pd.page_index)
@@ -1374,10 +1379,17 @@ class MainWindow(QMainWindow):
                     if 'Times' in tb.font_family or 'Georgia' in tb.font_family: fn="tiro"
                     elif 'Courier' in tb.font_family: fn="cour"
                     tr=fitz.Rect(x+2,y+2,x+w-2,y+h-2)
+                    if tr.is_empty or not tr.is_valid:
+                        continue
                     pdf_fs=tb.font_size*font_scale
-                    op.insert_textbox(tr,tb.text,fontsize=pdf_fs,fontname=fn,color=self._hex2c(tb.font_color))
+                    # Use TextWriter for more reliable text rendering
+                    tw=fitz.TextWriter(op.rect)
+                    font=fitz.Font(fn)
+                    tw.fill_textbox(tr,tb.text,font=font,fontsize=pdf_fs)
+                    tw.write_text(op,overlay=True,color=self._hex2c(tb.font_color))
+                    tb_count += 1
             out.save(path); out.close()
-            self.toast.show(f"Export réussi ({len(plist)} pages) !", 'success')
+            self.toast.show(f"Export réussi ({len(plist)} pages, {tb_count} zone(s) de texte) !", 'success')
         except Exception as e: self.toast.show(f"Erreur export: {e}", 'error')
         finally: QApplication.restoreOverrideCursor()
 

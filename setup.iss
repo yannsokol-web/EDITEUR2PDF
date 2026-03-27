@@ -1,7 +1,7 @@
 [Setup]
 AppName=Editeur PDF
-AppVersion=1.1
-AppVerName=Editeur PDF 1.1
+AppVersion=1.2
+AppVerName=Editeur PDF 1.2
 AppPublisher=Yann Sokol
 AppCopyright=Copyright (c) 2026 Yann Sokol. Tous droits réservés.
 DefaultDirName={localappdata}\EditeurPDF
