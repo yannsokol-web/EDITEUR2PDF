@@ -8,7 +8,7 @@ Toute reproduction, distribution, modification ou utilisation non autorisée
 de ce logiciel, en tout ou en partie, est strictement interdite sans
 l'autorisation écrite préalable de l'auteur.
 """
-VERSION = "1.1"
+VERSION = "1.0"
 UPDATE_URL = "https://raw.githubusercontent.com/yannsokol-web/EDITEUR2PDF/main/version.txt"
 
 import sys, os, uuid, subprocess, threading, configparser, tempfile
