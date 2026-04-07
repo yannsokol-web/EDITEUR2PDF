@@ -8,7 +8,7 @@ Toute reproduction, distribution, modification ou utilisation non autorisée
 de ce logiciel, en tout ou en partie, est strictement interdite sans
 l'autorisation écrite préalable de l'auteur.
 """
-VERSION = "1.3"
+VERSION = "1.4"
 UPDATE_URL = "https://api.github.com/repos/yannsokol-web/EDITEUR2PDF/releases/latest"
 
 import sys, os, uuid, subprocess, threading, configparser, tempfile, json
@@ -1440,7 +1440,7 @@ class MainWindow(QMainWindow):
                     tw.fill_textbox(tr,tb.text,font=font,fontsize=pdf_fs)
                     tw.write_text(op,overlay=True,color=self._hex2c(tb.font_color))
                     tb_count += 1
-            out.save(path); out.close()
+            out.save(path, garbage=4, deflate=True, clean=True); out.close()
             self.toast.show(f"Export réussi ({len(plist)} pages, {tb_count} zone(s) de texte) !", 'success')
         except Exception as e: self.toast.show(f"Erreur export: {e}", 'error')
         finally: QApplication.restoreOverrideCursor()
