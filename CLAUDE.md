@@ -18,6 +18,8 @@ Quand le code source est modifié et prêt à être déployé :
 
 **Important** : les 3 valeurs (main.py, version.txt, setup.iss) doivent toujours être synchronisées.
 
+**SHA-256** : lors de la création de la release GitHub, inclure le hash SHA-256 de `InstallEditeurPDF.exe` dans le body de la release au format : `SHA256: <hash>`. L'app vérifie ce hash avant d'exécuter l'installeur téléchargé.
+
 ## CI/CD
 
 - GitHub Actions workflow dans `.github/workflows/build.yml`

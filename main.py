@@ -8,24 +8,31 @@ Toute reproduction, distribution, modification ou utilisation non autorisée
 de ce logiciel, en tout ou en partie, est strictement interdite sans
 l'autorisation écrite préalable de l'auteur.
 """
-VERSION = "1.4"
+VERSION = "1.5"
 UPDATE_URL = "https://api.github.com/repos/yannsokol-web/EDITEUR2PDF/releases/latest"
 
-import sys, os, uuid, subprocess, threading, configparser, tempfile, json
+import sys, os, uuid, subprocess, threading, configparser, tempfile, json, hashlib, logging, re  # subprocess: used by _on_update_downloaded for auto-update
+from collections import OrderedDict
 from urllib.request import urlopen, urlretrieve, Request
 import fitz
-fitz.TOOLS.mupdf_display_errors(False)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s [%(name)s] %(message)s'
+)
+_logger = logging.getLogger('EditeurPDF')
+fitz.TOOLS.mupdf_display_errors(True)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QScrollArea, QFrame,
     QSlider, QComboBox, QSpinBox, QCheckBox, QColorDialog,
     QDialog, QDialogButtonBox, QMessageBox, QGraphicsView, QGraphicsScene,
     QGraphicsRectItem, QGraphicsTextItem,
-    QGraphicsItem, QStackedWidget, QLayout, QSplitter
+    QGraphicsItem, QStackedWidget, QLayout, QSplitter,
+    QProgressBar
 )
 from PySide6.QtCore import (
     Qt, QSize, QRectF, QMimeData, Signal, QTimer,
-    QPoint, QRect, QEvent
+    QPoint, QRect, QEvent, QThread
 )
 from PySide6.QtGui import (
     QPixmap, QImage, QIcon, QColor, QPainter, QPen, QBrush,
@@ -37,8 +44,6 @@ ICON_PATH = os.path.join(_APP_DIR, 'logoediteurpdf.ico')
 
 _cfg = configparser.ConfigParser()
 _cfg.read(os.path.join(_APP_DIR, 'config.ini'), encoding='utf-8')
-INSTALLER_PATH = _cfg.get('update', 'installer_path', fallback='')
-
 C = {
     'bg': '#f0f2f5', 'surface': '#ffffff', 'border': '#d9d9d9',
     'primary': '#1677ff', 'primary_hover': '#0958d9',
@@ -47,30 +52,67 @@ C = {
     'success': '#52c41a', 'reader_bg': '#3a3a3a',
 }
 
-# ── Cache PDF global ───────────────────────────────────────
-_pdf_doc_cache = {}  # id(pdf_bytes) -> fitz.Document
+def get_system_font():
+    if sys.platform == 'win32':
+        return QFont("Segoe UI", 10)
+    elif sys.platform == 'darwin':
+        return QFont("SF Pro Text", 10)
+    else:
+        return QFont("Noto Sans", 10)
 
-def get_cached_doc(pdf_bytes):
-    """Return a cached fitz.Document for the given bytes, opening it once."""
-    key = id(pdf_bytes)
+# ── Cache PDF global ───────────────────────────────────────
+MAX_CACHED_DOCS = 10
+_pdf_doc_cache = OrderedDict()  # sha256(pdf_bytes) -> fitz.Document
+
+def get_cached_doc(source):
+    """Return a cached fitz.Document. Accepts PdfSource or raw bytes."""
+    if isinstance(source, PdfSource):
+        key = source.hash
+        raw = source.pdf_bytes
+    else:
+        key = hashlib.sha256(source).hexdigest()
+        raw = source
     doc = _pdf_doc_cache.get(key)
-    if doc is None:
-        doc = open_pdf(pdf_bytes)
-        _pdf_doc_cache[key] = doc
+    if doc is not None:
+        _pdf_doc_cache.move_to_end(key)  # LRU: marquer comme récemment utilisé
+        return doc
+    doc = open_pdf(raw)
+    _pdf_doc_cache[key] = doc
+    # Éviction LRU
+    while len(_pdf_doc_cache) > MAX_CACHED_DOCS:
+        old_key, old_doc = _pdf_doc_cache.popitem(last=False)
+        try:
+            old_doc.close()
+        except Exception:
+            pass
     return doc
 
 
 # ── Données ────────────────────────────────────────────────
-class PageData:
-    def __init__(self, pdf_bytes, page_index, label, thumbnail):
-        self.id = str(uuid.uuid4())
+class PdfSource:
+    """Stores PDF bytes once and pre-computes the SHA-256 hash."""
+    def __init__(self, pdf_bytes):
         self.pdf_bytes = pdf_bytes
+        self.hash = hashlib.sha256(pdf_bytes).hexdigest()
+
+class PageData:
+    def __init__(self, pdf_source, page_index, label, thumbnail):
+        self.id = str(uuid.uuid4())
+        self.source = pdf_source
         self.page_index = page_index
         self.label = label
         self.thumbnail = thumbnail
-        self.thumb_scaled = thumbnail.scaled(200, 270, Qt.KeepAspectRatio, Qt.SmoothTransformation) if thumbnail and not thumbnail.isNull() else thumbnail
+        app = QApplication.instance()
+        dpr = app.primaryScreen().devicePixelRatio() if app and app.primaryScreen() else 1.0
+        self.thumb_scaled = thumbnail.scaled(int(200 * dpr), int(270 * dpr), Qt.KeepAspectRatio, Qt.SmoothTransformation) if thumbnail and not thumbnail.isNull() else thumbnail
+        if self.thumb_scaled and not self.thumb_scaled.isNull():
+            self.thumb_scaled.setDevicePixelRatio(dpr)
         self.hires = None
         self.hires_scale = 0
+
+    @property
+    def pdf_bytes(self):
+        return self.source.pdf_bytes
 
 class TextBoxData:
     def __init__(self, page_id, x_pct, y_pct):
@@ -94,20 +136,25 @@ def open_pdf(data):
     """Open a PDF, repairing it if the first attempt fails."""
     try:
         doc = fitz.open(stream=data, filetype="pdf")
-        # Force-read to trigger any deferred errors
         _ = len(doc)
         return doc
-    except Exception:
-        tmp = fitz.open(stream=data, filetype="pdf")
-        clean_data = tmp.tobytes(garbage=3, clean=True)
-        tmp.close()
-        return fitz.open(stream=clean_data, filetype="pdf")
+    except Exception as first_err:
+        try:
+            repair_doc = fitz.open()  # Empty document
+            repair_doc.insert_pdf(fitz.open(stream=data, filetype="pdf"))
+            clean_data = repair_doc.tobytes(garbage=4, clean=True, deflate=True)
+            repair_doc.close()
+            doc = fitz.open(stream=clean_data, filetype="pdf")
+            _ = len(doc)
+            return doc
+        except Exception:
+            raise ValueError(f"PDF illisible ou corrompu : {first_err}") from first_err
 
-def render_page_pixmap(pdf_bytes, page_index, scale=2.0):
+def render_page_pixmap(source, page_index, scale=2.0):
     """Render a PDF page to QPixmap at given scale (raw pixels, no DPR)."""
-    doc = get_cached_doc(pdf_bytes)
+    doc = get_cached_doc(source)
     pix = doc[page_index].get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-    img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
+    img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
     return QPixmap.fromImage(img)
 
 # ── FlowLayout ─────────────────────────────────────────────
@@ -296,7 +343,7 @@ class PageCard(QFrame):
                     painter.setPen(Qt.NoPen)
                     painter.drawEllipse(pm.width()-20, 0, 20, 20)
                     painter.setPen(QColor('#fff'))
-                    painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                    painter.setFont(QFont(get_system_font().family(), 9, QFont.Bold))
                     painter.drawText(QRect(pm.width()-20, 0, 20, 20), Qt.AlignCenter, str(len(ids)))
                     painter.end()
                     pm = pm2
@@ -468,8 +515,7 @@ class ReaderView(QGraphicsView):
 
     PAGE_GAP = 40  # pixels between pages
 
-    LOWRES_SCALE = 1.0   # fast placeholder (was 0.5 – too blurry)
-    HIRES_SCALE = 3.0    # quality render
+    BASE_SCALE = 2.0     # 144 DPI – scene coordinate unit
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -484,17 +530,12 @@ class ReaderView(QGraphicsView):
         self._placing = False
         self._copied = None
         self._page_items = []
-        self._hires_timer = QTimer(self)
-        self._hires_timer.setSingleShot(True)
-        self._hires_timer.timeout.connect(self._upgrade_visible)
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self._refresh_visible_pages)
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setSingleShot(True)
         self._scroll_timer.timeout.connect(self._emit_current_page)
-        # Background pre-cache: renders one page per tick at HIRES
-        self._precache_timer = QTimer(self)
-        self._precache_timer.setInterval(50)
-        self._precache_timer.timeout.connect(self._precache_step)
-        self._precache_idx = 0
         # Hand-drag panning by default
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setCursor(Qt.OpenHandCursor)
@@ -502,9 +543,10 @@ class ReaderView(QGraphicsView):
     def set_data(self, pages, textboxes, start_idx=0):
         self._pages = pages
         self._textboxes = textboxes
+        self._copied = None
         self._zoom = 1.0
         self._start_idx = start_idx
-        self._precache_timer.stop()
+        self._refresh_timer.stop()
         # Reset hi-res cache to avoid stale oversized pixmaps
         for p in pages:
             p.hires = None
@@ -512,7 +554,7 @@ class ReaderView(QGraphicsView):
         self._render_all()
 
     def _render_all(self):
-        """Layout all pages with low-res placeholders, then upgrade visible ones."""
+        """Layout all pages rendered at BASE_SCALE, then refresh visible for zoom/DPR."""
         self._scene.clear()
         self._tb_items.clear()
         self._page_items.clear()
@@ -528,14 +570,13 @@ class ReaderView(QGraphicsView):
         total = len(self._pages)
 
         for idx, p in enumerate(self._pages):
-            pm = self._get_pixmap(p, self.LOWRES_SCALE)
-            # Scale placeholder to match hi-res dimensions
-            target_w = int(pm.width() * self.HIRES_SCALE / self.LOWRES_SCALE)
-            target_h = int(pm.height() * self.HIRES_SCALE / self.LOWRES_SCALE)
-            pw, ph = target_w, target_h
+            pm = render_page_pixmap(p.source, p.page_index, self.BASE_SCALE)
+            p.hires = pm
+            p.hires_scale = self.BASE_SCALE
+            pw, ph = pm.width(), pm.height()
             max_width = max(max_width, pw)
 
-            pix_item = self._scene.addPixmap(pm.scaled(pw, ph, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            pix_item = self._scene.addPixmap(pm)
             pix_item.setPos(0, y_offset)
 
             tb_items_for_page = []
@@ -551,7 +592,7 @@ class ReaderView(QGraphicsView):
 
             lbl = self._scene.addSimpleText(f"Page {idx+1} / {total} — {p.label}")
             lbl.setBrush(QColor('#aaa'))
-            lbl.setFont(QFont("Segoe UI", 10))
+            lbl.setFont(get_system_font())
             lbl.setPos(4, y_offset - 20)
 
             self._page_items.append((pix_item, y_offset, pw, ph, p, lbl, tb_items_for_page))
@@ -582,7 +623,7 @@ class ReaderView(QGraphicsView):
     def _get_pixmap(self, p, scale):
         if p.hires and p.hires_scale >= scale:
             return p.hires
-        p.hires = render_page_pixmap(p.pdf_bytes, p.page_index, scale)
+        p.hires = render_page_pixmap(p.source, p.page_index, scale)
         p.hires_scale = scale
         return p.hires
 
@@ -599,63 +640,55 @@ class ReaderView(QGraphicsView):
         if start and 0 < start < len(self._page_items):
             self.go(start)
         self._emit_current_page()
-        self._schedule_hires()
+        self._schedule_refresh()
         # Sync slider in main window
         w = self.window()
         if hasattr(w, '_sync_zoom_display'):
             w._sync_zoom_display()
 
-    def _schedule_hires(self):
-        self._hires_timer.start(150)
+    def _schedule_refresh(self):
+        self._refresh_timer.start(100)
 
-    def _apply_hires_pixmap(self, pix_item, p, scale):
-        """Set a hi-res pixmap on a scene item, adjusting DPR to keep layout stable."""
-        pm = self._get_pixmap(p, scale)
-        pm_display = QPixmap(pm)
-        pm_display.setDevicePixelRatio(scale / self.HIRES_SCALE)
-        pix_item.setPixmap(pm_display)
-
-    def _flush_cached(self):
-        """Instantly apply already-cached HIRES pixmaps to all visible pages."""
-        vp = self.mapToScene(self.viewport().rect()).boundingRect()
-        margin = vp.height()
-        for pix_item, yo, pw, ph, p, *_ in self._page_items:
-            if yo + ph < vp.top() - margin or yo > vp.bottom() + margin:
-                continue
-            if p.hires and p.hires_scale >= self.HIRES_SCALE:
-                pm_display = QPixmap(p.hires)
-                pm_display.setDevicePixelRatio(p.hires_scale / self.HIRES_SCALE)
-                pix_item.setPixmap(pm_display)
-
-    def _upgrade_visible(self):
-        """Upgrade visible pages to high-res, adapting scale to zoom + screen DPR."""
+    def _refresh_visible_pages(self):
+        """Upgrade visible pages to match zoom/DPR, free memory for distant pages."""
         dpr = self._screen_dpr()
-        needed = max(self.HIRES_SCALE, self._zoom * self.HIRES_SCALE * dpr)
-        needed = min(needed, 8.0)
+        effective_scale = max(self.BASE_SCALE, self._zoom * self.BASE_SCALE * dpr)
+        effective_scale = min(effective_scale, 6.0)
+
         vp = self.mapToScene(self.viewport().rect()).boundingRect()
         margin = vp.height()
-        for pix_item, yo, pw, ph, p, *_ in self._page_items:
-            if yo + ph < vp.top() - margin or yo > vp.bottom() + margin:
-                continue
-            if p.hires_scale >= needed:
-                continue
-            self._apply_hires_pixmap(pix_item, p, needed)
-            QApplication.processEvents()
-        # Start background pre-cache of remaining pages at HIRES_SCALE
-        if not self._precache_timer.isActive():
-            self._precache_idx = 0
-            self._precache_timer.start()
+        margin_free = margin * 2
 
-    def _precache_step(self):
-        """Pre-cache one page at HIRES_SCALE per tick, then apply it to the scene."""
-        while self._precache_idx < len(self._page_items):
-            pix_item, yo, pw, ph, p, *_ = self._page_items[self._precache_idx]
-            self._precache_idx += 1
-            if p.hires_scale >= self.HIRES_SCALE:
-                continue  # already cached, skip to next
-            self._apply_hires_pixmap(pix_item, p, self.HIRES_SCALE)
-            return  # one page per tick to keep UI responsive
-        self._precache_timer.stop()
+        upgraded_one = False
+        for pix_item, yo, pw, ph, p, lbl, tb_items in self._page_items:
+            visible = not (yo + ph < vp.top() - margin or yo > vp.bottom() + margin)
+            in_keep_zone = not (yo + ph < vp.top() - margin_free or yo > vp.bottom() + margin_free)
+
+            if visible:
+                if p.hires_scale >= effective_scale:
+                    continue
+                if upgraded_one:
+                    continue  # one per tick, re-schedule for rest
+                pm = render_page_pixmap(p.source, p.page_index, effective_scale)
+                p.hires = pm
+                p.hires_scale = effective_scale
+                pm_display = QPixmap(pm)
+                pm_display.setDevicePixelRatio(effective_scale / self.BASE_SCALE)
+                pix_item.setPixmap(pm_display)
+                upgraded_one = True
+            elif not in_keep_zone:
+                if p.hires is not None:
+                    p.hires = None
+                    p.hires_scale = 0
+
+        # Re-schedule if more pages need upgrade
+        needs_more = any(
+            p.hires_scale < effective_scale
+            for _, yo, _, ph, p, *_ in self._page_items
+            if not (yo + ph < vp.top() - margin or yo > vp.bottom() + margin)
+        )
+        if needs_more:
+            self._refresh_timer.start(10)
 
     def _emit_current_page(self):
         """Determine which page is most visible and emit signal."""
@@ -763,7 +796,6 @@ class ReaderView(QGraphicsView):
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
-            old_zoom = self._zoom
             f = 1.15 if e.angleDelta().y() > 0 else 1/1.15
             self._zoom = max(0.25, min(5.0, self._zoom * f))
             self.resetTransform()
@@ -771,9 +803,7 @@ class ReaderView(QGraphicsView):
             w = self.window()
             if hasattr(w, '_sync_zoom_display'):
                 w._sync_zoom_display()
-            if self._zoom < old_zoom:
-                self._flush_cached()   # instant: apply already-rendered HIRES
-            self._schedule_hires()     # debounced: render anything still missing
+            self._schedule_refresh()
             e.accept()
         else:
             super().wheelEvent(e)
@@ -781,7 +811,7 @@ class ReaderView(QGraphicsView):
     def scrollContentsBy(self, dx, dy):
         super().scrollContentsBy(dx, dy)
         self._scroll_timer.start(80)
-        self._schedule_hires()
+        self._schedule_refresh()
 
     def selected_tb(self):
         for it in self._scene.selectedItems():
@@ -791,6 +821,8 @@ class ReaderView(QGraphicsView):
     def delete_selected(self):
         it = self.selected_tb()
         if it:
+            if self._copied and self._copied.page_id == it.tb.page_id:
+                self._copied = None
             if it.tb in self._textboxes: self._textboxes.remove(it.tb)
             self._scene.removeItem(it)
             if it in self._tb_items: self._tb_items.remove(it)
@@ -959,6 +991,7 @@ class ExportRangeDialog(QDialog):
 # ── PreviewPanel ───────────────────────────────────────────
 class PreviewPanel(QFrame):
     closed = Signal()
+    BASE_SCALE = 2.0
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumWidth(250)
@@ -996,8 +1029,12 @@ class PreviewPanel(QFrame):
     def _build_scene(self):
         """Build scene from current pixmap and textboxes (shared by set_page and _upgrade_preview)."""
         self._scene.clear()
-        self._scene.addPixmap(self._pm)
-        pw, ph = self._pm.width(), self._pm.height()
+        dpr_ratio = self._render_scale / self.BASE_SCALE
+        pm_display = QPixmap(self._pm)
+        pm_display.setDevicePixelRatio(dpr_ratio)
+        self._scene.addPixmap(pm_display)
+        pw = self._pm.width() / dpr_ratio
+        ph = self._pm.height() / dpr_ratio
         for tb in self._textboxes:
             if tb.page_id == self._pd.id:
                 it = TextBoxItem(tb, pw, ph)
@@ -1009,8 +1046,8 @@ class PreviewPanel(QFrame):
         self._pd = pd
         self._textboxes = textboxes or []
         self.info.setText(f"Page {idx+1} / {total} — {pd.label}")
-        self._render_scale = 3.0
-        self._pm = render_page_pixmap(pd.pdf_bytes, pd.page_index, self._render_scale)
+        self._render_scale = self.BASE_SCALE
+        self._pm = render_page_pixmap(pd.source, pd.page_index, self._render_scale)
         self._build_scene()
         self._zoom = 1.0; self._zs.setValue(100)
         self._view.resetTransform()
@@ -1026,10 +1063,11 @@ class PreviewPanel(QFrame):
     def _upgrade_preview(self):
         if not self._pd: return
         dpr = self.screen().devicePixelRatio() if self.screen() else 1.0
-        needed = max(3.0, self._zoom * 3.0 * dpr)
-        if needed <= self._render_scale: return
-        self._render_scale = min(needed, 8.0)
-        self._pm = render_page_pixmap(self._pd.pdf_bytes, self._pd.page_index, self._render_scale)
+        effective_scale = max(self.BASE_SCALE, self._zoom * self.BASE_SCALE * dpr)
+        effective_scale = min(effective_scale, 6.0)
+        if self._render_scale >= effective_scale: return
+        self._render_scale = effective_scale
+        self._pm = render_page_pixmap(self._pd.source, self._pd.page_index, self._render_scale)
         self._build_scene()
         self._view.resetTransform(); self._view.scale(self._zoom, self._zoom)
 
@@ -1052,6 +1090,119 @@ class PreviewPanel(QFrame):
             self._zoom=max(0.1,min(10.0,self._zoom*factor))
             self._apply(); return True
         return super().eventFilter(obj, event)
+
+
+# ══════════════════════════════════════════════════════════════
+#  ExportWorker – heavy PDF work off the UI thread
+# ══════════════════════════════════════════════════════════════
+class ExportWorker(QThread):
+    progress = Signal(int, int)   # current, total
+    finished = Signal(str)        # success message
+    error    = Signal(str)        # error message
+
+    def __init__(self, plist, textboxes, path, base_scale):
+        super().__init__()
+        self.plist = plist
+        self.textboxes = textboxes
+        self.path = path
+        self.base_scale = base_scale
+
+    @staticmethod
+    def _hex2c(h):
+        h = h.lstrip('#')
+        return (int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255)
+
+    @staticmethod
+    def _get_pdf_font(font_family, bold, italic):
+        """Map Qt font settings to PyMuPDF base14 font names."""
+        family = font_family.lower()
+        if any(x in family for x in ('courier', 'mono', 'consolas')):
+            if bold and italic: return "cobi"
+            if bold: return "cobo"
+            if italic: return "coit"
+            return "cour"
+        elif any(x in family for x in ('times', 'georgia', 'serif', 'garamond')):
+            if bold and italic: return "tibi"
+            if bold: return "tibo"
+            if italic: return "tiit"
+            return "tiro"
+        else:
+            if bold and italic: return "hebi"
+            if bold: return "hebo"
+            if italic: return "heit"
+            return "helv"
+
+    def run(self):
+        tmp_path = None
+        try:
+            out = fitz.open()
+            # TextBox font_size is in Qt points at BASE_SCALE (144 DPI).
+            # PDF uses 72 DPI points, so: pdf_pt = qt_pt * 72 / (BASE_SCALE * 72) = qt_pt / BASE_SCALE
+            font_scale = 1.0 / self.base_scale
+            tb_count = 0
+            total = len(self.plist)
+            for i, pd in enumerate(self.plist):
+                src = get_cached_doc(pd.source)
+                out.insert_pdf(src, from_page=pd.page_index, to_page=pd.page_index)
+                op = out[-1]; pw, ph = op.rect.width, op.rect.height
+                for tb in self.textboxes:
+                    if tb.page_id != pd.id or not tb.text.strip():
+                        continue
+                    x, y = tb.x_pct / 100 * pw, tb.y_pct / 100 * ph
+                    w, h = tb.width_pct / 100 * pw, tb.height_pct / 100 * ph
+                    r = fitz.Rect(x, y, x + w, y + h)
+                    if tb.bg_color != 'transparent':
+                        sh = op.new_shape(); sh.draw_rect(r); sh.finish(fill=self._hex2c(tb.bg_color)); sh.commit()
+                    if tb.border_width > 0 and tb.border_color != 'transparent':
+                        sh = op.new_shape(); sh.draw_rect(r); sh.finish(color=self._hex2c(tb.border_color), width=tb.border_width); sh.commit()
+                    fn = self._get_pdf_font(tb.font_family, tb.bold, tb.italic)
+                    tr = fitz.Rect(x + 2, y + 2, x + w - 2, y + h - 2)
+                    if tr.is_empty or not tr.is_valid:
+                        continue
+                    pdf_fs = tb.font_size * font_scale
+                    tw = fitz.TextWriter(op.rect)
+                    font = fitz.Font(fn)
+                    rc = tw.fill_textbox(tr, tb.text, font=font, fontsize=pdf_fs)
+                    if rc:
+                        attempts = 0
+                        while rc and pdf_fs > 4 and attempts < 20:
+                            pdf_fs *= 0.85
+                            tw = fitz.TextWriter(op.rect)
+                            rc = tw.fill_textbox(tr, tb.text, font=font, fontsize=pdf_fs)
+                            attempts += 1
+                    tw.write_text(op, overlay=True, color=self._hex2c(tb.font_color))
+                    tb_count += 1
+                self.progress.emit(i + 1, total)
+            fd, tmp_path = tempfile.mkstemp(suffix='.pdf', dir=os.path.dirname(os.path.abspath(self.path)))
+            os.close(fd)
+            out.save(tmp_path, garbage=4, deflate=True, clean=True); out.close()
+            verify_doc = fitz.open(tmp_path); len(verify_doc); verify_doc.close()
+            os.replace(tmp_path, self.path)
+            tmp_path = None
+            self.finished.emit(f"Export réussi ({len(self.plist)} pages, {tb_count} zone(s) de texte) !")
+        except Exception as e:
+            self.error.emit(f"Erreur export: {e}")
+        finally:
+            if tmp_path is not None and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+
+class ExportProgressDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Export en cours...")
+        self.setFixedSize(350, 100)
+        self.setModal(True)
+        layout = QVBoxLayout(self)
+        self.label = QLabel("Préparation...")
+        layout.addWidget(self.label)
+        self.bar = QProgressBar()
+        layout.addWidget(self.bar)
+
+    def update_progress(self, current, total):
+        self.bar.setMaximum(total)
+        self.bar.setValue(current)
+        self.label.setText(f"Page {current}/{total}...")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1081,6 +1232,7 @@ class MainWindow(QMainWindow):
         self._check_update()
 
     def _check_update(self):
+        self._expected_hash = None
         def _fetch():
             try:
                 req = Request(UPDATE_URL, headers={"Accept": "application/vnd.github+json"})
@@ -1088,6 +1240,9 @@ class MainWindow(QMainWindow):
                 data = json.loads(resp.read().decode())
                 remote = data.get("tag_name", "").lstrip("v")
                 if remote and remote != VERSION:
+                    body = data.get("body", "")
+                    m = re.search(r'SHA256:\s*([a-fA-F0-9]{64})', body)
+                    self._expected_hash = m.group(1).lower() if m else None
                     self._update_available.emit(remote)
             except Exception:
                 pass
@@ -1116,6 +1271,16 @@ class MainWindow(QMainWindow):
             try:
                 tmp = os.path.join(tempfile.gettempdir(), "InstallEditeurPDF.exe")
                 urlretrieve(download_url, tmp)
+                with open(tmp, 'rb') as f:
+                    actual_hash = hashlib.sha256(f.read()).hexdigest()
+                if not self._expected_hash:
+                    os.remove(tmp)
+                    self._update_download_failed.emit()
+                    return
+                if actual_hash != self._expected_hash:
+                    os.remove(tmp)
+                    self._update_download_failed.emit()
+                    return
                 self._update_downloaded.emit(tmp)
             except Exception:
                 self._update_download_failed.emit()
@@ -1123,8 +1288,20 @@ class MainWindow(QMainWindow):
         threading.Thread(target=_download, daemon=True).start()
 
     def _on_update_downloaded(self, path):
-        subprocess.Popen([path])
-        QTimer.singleShot(500, self.close)
+        if not path.startswith(tempfile.gettempdir()) or not path.endswith('.exe'):
+            self.toast.show("Chemin d'installeur invalide.", 'error')
+            return
+        reply = QMessageBox.question(
+            self, "Mise à jour téléchargée",
+            f"L'installeur a été téléchargé.\n\nLancer la mise à jour maintenant ?\n\n({path})",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            subprocess.Popen([path])
+            QTimer.singleShot(500, self.close)
+        else:
+            self.toast.show("Mise à jour reportée.", 'info')
 
     def _on_update_download_failed(self):
         self.toast.show("Échec du téléchargement de la mise à jour.", 'error')
@@ -1289,6 +1466,7 @@ class MainWindow(QMainWindow):
     def load_files(self, paths):
         if self.mode=='read': self._switch_mode('edit')
         self.insert_files_at(paths, len(self.pages), msg_verb="chargée")
+        self._cleanup_cache()
 
     def insert_files_at(self, paths, at_index, msg_verb="insérée"):
         """Insert PDF files at a specific index."""
@@ -1296,11 +1474,12 @@ class MainWindow(QMainWindow):
         for path in paths:
             try:
                 with open(path,'rb') as f: data=f.read()
-                doc=get_cached_doc(data); name=os.path.basename(path)
+                source=PdfSource(data)
+                doc=get_cached_doc(source); name=os.path.basename(path)
                 for i in range(len(doc)):
-                    pix=doc[i].get_pixmap(matrix=fitz.Matrix(0.5,0.5),alpha=False)
-                    img=QImage(pix.samples,pix.width,pix.height,pix.stride,QImage.Format_RGB888)
-                    self.pages.insert(at_index+count, PageData(data,i,f"{name} – p.{i+1}",QPixmap.fromImage(img)))
+                    pix=doc[i].get_pixmap(matrix=fitz.Matrix(1.0,1.0),alpha=False)
+                    img=QImage(pix.samples,pix.width,pix.height,pix.stride,QImage.Format_RGB888).copy()
+                    self.pages.insert(at_index+count, PageData(source,i,f"{name} – p.{i+1}",QPixmap.fromImage(img)))
                     count+=1
             except Exception as e:
                 errors.append(f"{os.path.basename(path)}: {e}")
@@ -1309,6 +1488,7 @@ class MainWindow(QMainWindow):
             self.toast.show(f"{count} page(s) {msg_verb}(s).", 'success')
         for err in errors:
             self.toast.show(f"Erreur: {err}", 'error')
+        self._cleanup_cache()
         QApplication.restoreOverrideCursor()
 
     def _on_card_click(self, page_id):
@@ -1327,7 +1507,9 @@ class MainWindow(QMainWindow):
                 self.selected_ids.add(self.pages[i].id)
             self._sync_card_selection(); self._update_sel_btns()
         else:
-            self.selected_ids.clear(); self._last_selected_idx = clicked_idx
+            self.selected_ids.clear()
+            self.selected_ids.add(page_id)
+            self._last_selected_idx = clicked_idx
             self._sync_card_selection(); self._update_sel_btns()
             p = self.pages[clicked_idx]
             self._preview_page_idx = clicked_idx
@@ -1366,7 +1548,7 @@ class MainWindow(QMainWindow):
 
     def _cleanup_cache(self):
         """Ferme et supprime les documents PDF qui ne sont plus référencés."""
-        live = {id(p.pdf_bytes) for p in self.pages}
+        live = {p.source.hash for p in self.pages}
         for key in list(_pdf_doc_cache):
             if key not in live:
                 _pdf_doc_cache[key].close()
@@ -1402,48 +1584,25 @@ class MainWindow(QMainWindow):
             if path: self._do_export(self.pages[s:e],path)
 
     def _do_export(self, plist, path):
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            # Sync text from any active TextBoxItem editors before exporting
-            if hasattr(self, 'reader') and hasattr(self.reader, '_tb_items'):
-                for it in self.reader._tb_items:
-                    it.tb.text = it.text_item.toPlainText()
-            out=fitz.open()
-            # Font size in editor is in Qt points rendered on a HIRES_SCALE-enlarged page.
-            # Scale it down so the exported PDF text matches the editor appearance.
-            dpi = QApplication.primaryScreen().logicalDotsPerInch()
-            font_scale = dpi / 72.0 / ReaderView.HIRES_SCALE
-            tb_count = 0
-            for pd in plist:
-                src=get_cached_doc(pd.pdf_bytes)
-                out.insert_pdf(src,from_page=pd.page_index,to_page=pd.page_index)
-                op=out[-1]; pw,ph=op.rect.width,op.rect.height
-                for tb in self.textboxes:
-                    if tb.page_id!=pd.id or not tb.text.strip(): continue
-                    x,y=tb.x_pct/100*pw,tb.y_pct/100*ph
-                    w,h=tb.width_pct/100*pw,tb.height_pct/100*ph
-                    r=fitz.Rect(x,y,x+w,y+h)
-                    if tb.bg_color!='transparent':
-                        sh=op.new_shape(); sh.draw_rect(r); sh.finish(fill=self._hex2c(tb.bg_color)); sh.commit()
-                    if tb.border_width>0 and tb.border_color!='transparent':
-                        sh=op.new_shape(); sh.draw_rect(r); sh.finish(color=self._hex2c(tb.border_color),width=tb.border_width); sh.commit()
-                    fn="helv"
-                    if 'Times' in tb.font_family or 'Georgia' in tb.font_family: fn="tiro"
-                    elif 'Courier' in tb.font_family: fn="cour"
-                    tr=fitz.Rect(x+2,y+2,x+w-2,y+h-2)
-                    if tr.is_empty or not tr.is_valid:
-                        continue
-                    pdf_fs=tb.font_size*font_scale
-                    # Use TextWriter for more reliable text rendering
-                    tw=fitz.TextWriter(op.rect)
-                    font=fitz.Font(fn)
-                    tw.fill_textbox(tr,tb.text,font=font,fontsize=pdf_fs)
-                    tw.write_text(op,overlay=True,color=self._hex2c(tb.font_color))
-                    tb_count += 1
-            out.save(path, garbage=4, deflate=True, clean=True); out.close()
-            self.toast.show(f"Export réussi ({len(plist)} pages, {tb_count} zone(s) de texte) !", 'success')
-        except Exception as e: self.toast.show(f"Erreur export: {e}", 'error')
-        finally: QApplication.restoreOverrideCursor()
+        # Sync text from any active TextBoxItem editors before exporting
+        if hasattr(self, 'reader') and hasattr(self.reader, '_tb_items'):
+            for it in self.reader._tb_items:
+                it.tb.text = it.text_item.toPlainText()
+
+        page_ids = {pd.id for pd in plist}
+        textboxes = [tb for tb in self.textboxes if tb.page_id in page_ids]
+
+        dlg = ExportProgressDialog(self)
+        dlg.show()
+
+        worker = ExportWorker(plist, textboxes, path, ReaderView.BASE_SCALE)
+        worker.progress.connect(dlg.update_progress)
+        worker.finished.connect(lambda msg: (dlg.close(), self.toast.show(msg, 'success')))
+        worker.error.connect(lambda msg: (dlg.close(), self.toast.show(msg, 'error')))
+        worker.start()
+
+        self._export_worker = worker
+        self._export_dialog = dlg
 
     def _hex2c(self, h):
         h=h.lstrip('#'); return (int(h[0:2],16)/255,int(h[2:4],16)/255,int(h[4:6],16)/255)
@@ -1492,6 +1651,27 @@ class MainWindow(QMainWindow):
         self.tbprops.adjustSize()
         self.tbprops.move(max(10,(self.width()-self.tbprops.width())//2), self.height()-self.tbprops.height()-80); self.tbprops.raise_()
 
+    def closeEvent(self, event):
+        """Demander confirmation si des pages sont chargées."""
+        if self.pages:
+            reply = QMessageBox.question(
+                self, "Quitter l'éditeur",
+                "Des pages sont en cours d'édition.\nLes modifications non exportées seront perdues.\n\nQuitter quand même ?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                event.ignore()
+                return
+        # Nettoyer le cache avant de quitter
+        for doc in _pdf_doc_cache.values():
+            try:
+                doc.close()
+            except Exception:
+                pass
+        _pdf_doc_cache.clear()
+        event.accept()
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if self.rnav.isVisible(): self._pos_rnav()
@@ -1508,7 +1688,7 @@ class MainWindow(QMainWindow):
 def main():
     app=QApplication(sys.argv); app.setStyle('Fusion')
     if os.path.exists(ICON_PATH): app.setWindowIcon(QIcon(ICON_PATH))
-    app.setFont(QFont("Segoe UI", 10))
+    app.setFont(get_system_font())
     w=MainWindow(); w.show(); sys.exit(app.exec())
 
 if __name__=='__main__':
