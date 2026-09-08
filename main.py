@@ -8,7 +8,7 @@ Toute reproduction, distribution, modification ou utilisation non autorisée
 de ce logiciel, en tout ou en partie, est strictement interdite sans
 l'autorisation écrite préalable de l'auteur.
 """
-VERSION = "1.6"
+VERSION = "1.7"
 UPDATE_URL = "https://api.github.com/repos/yannsokol-web/EDITEUR2PDF/releases/latest"
 
 import sys, os, uuid, subprocess, threading, tempfile, json, hashlib, logging, re  # subprocess: used by _on_update_downloaded for auto-update
@@ -1279,6 +1279,49 @@ class PreviewPanel(QFrame):
         return super().eventFilter(obj, event)
 
 
+# ── PreviewHandle ──────────────────────────────────────────
+class PreviewHandle(QFrame):
+    """Thin strip pinned to the right edge that unfolds the preview panel.
+
+    Clicking a page only selects it: the preview is opened on demand from here,
+    which also makes it recoverable after being closed with its own x.
+    """
+    clicked = Signal()
+    WIDTH = 22
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(self.WIDTH)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Afficher l'aperçu de la page sélectionnée")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setAlignment(Qt.AlignCenter)
+        self.arrow = QLabel("◀")
+        self.arrow.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self.arrow)
+        self._paint(False)
+
+    def _paint(self, hover):
+        bg = '#e9eef7' if hover else C['surface']
+        col = C['primary'] if hover else C['text2']
+        self.setStyleSheet(f"PreviewHandle{{background:{bg};border-left:1px solid {C['border']};}}")
+        self.arrow.setStyleSheet(f"color:{col};font-size:11px;border:none;background:transparent;")
+
+    def enterEvent(self, e):
+        self._paint(True)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._paint(False)
+        super().leaveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(e)
+
+
 # ══════════════════════════════════════════════════════════════
 #  ExportWorker – heavy PDF work off the UI thread
 # ══════════════════════════════════════════════════════════════
@@ -1438,6 +1481,7 @@ class MainWindow(QMainWindow):
         self._last_selected_id = None
         self._reader_target = None
         self._reader_dirty = True
+        self._preview_open = False
         self._pending_grid_anchor = None
         self._export_workers = set()
         self._build_toolbar(); self._build_central(); self._build_reader_nav(); self._build_tb_props()
@@ -1594,9 +1638,17 @@ class MainWindow(QMainWindow):
         self.grid_layout.setContentsMargins(24,24,24,24); self.grid_scroll.setWidget(self.grid_widget)
         self.splitter.addWidget(self.grid_scroll)
         self.preview=PreviewPanel(); self.preview.closed.connect(self._close_preview); self.preview.hide()
-        self.splitter.addWidget(self.preview)
-        self.splitter.setStretchFactor(0,1); self.splitter.setStretchFactor(1,0); self.splitter.setSizes([800,380])
+        self.preview_handle=PreviewHandle(); self.preview_handle.clicked.connect(self._open_preview)
+        # Poignée et panneau partagent le côté droit du splitter : replié, il ne
+        # reste que la bande de 22 px, sans widget flottant par-dessus la grille.
+        self.right_panel=QWidget()
+        rl=QHBoxLayout(self.right_panel); rl.setContentsMargins(0,0,0,0); rl.setSpacing(0)
+        rl.addWidget(self.preview_handle); rl.addWidget(self.preview, 1)
+        self.splitter.addWidget(self.right_panel)
+        self.splitter.setCollapsible(1, False)
+        self.splitter.setStretchFactor(0,1); self.splitter.setStretchFactor(1,0)
         self.stack.addWidget(self.splitter)
+        self._collapse_preview()
         self.reader=ReaderView()
         self.reader.tb_selected.connect(self._on_tb_selected)
         self.reader.tb_deselected.connect(self._on_tb_deselected)
@@ -1642,6 +1694,46 @@ class MainWindow(QMainWindow):
             return
         vbar = self.grid_scroll.verticalScrollBar()
         vbar.setValue(max(0, min(card.y() + anchor[1], vbar.maximum())))
+
+    PREVIEW_WIDTH = 380
+
+    def _open_preview(self):
+        """Unfold the preview on the selected page (falls back to the first one)."""
+        if not self.pages:
+            return
+        idx = next((i for i, p in enumerate(self.pages)
+                    if p.id == self._preview_page_id), None)
+        if idx is None:
+            idx = 0
+            self._preview_page_id = self.pages[0].id
+        self.preview.set_page(self.pages[idx], idx, len(self.pages), self.textboxes)
+        self._preview_open = True
+        self.preview_handle.hide()
+        self.preview.show()
+        self.right_panel.setMaximumWidth(16777215)
+        self._set_splitter_grip(True)
+        self.splitter.setSizes([max(1, self.splitter.width() - self.PREVIEW_WIDTH),
+                                self.PREVIEW_WIDTH])
+
+    def _collapse_preview(self):
+        """Fold the panel back to its handle. Capped width so the splitter cannot
+        be dragged open onto an empty strip."""
+        self._preview_open = False
+        self.preview.hide()
+        self.preview_handle.show()
+        self.right_panel.setMaximumWidth(PreviewHandle.WIDTH)
+        self._set_splitter_grip(False)
+        self.splitter.setSizes([max(1, self.splitter.width() - PreviewHandle.WIDTH),
+                                PreviewHandle.WIDTH])
+
+    def _set_splitter_grip(self, on):
+        """Replié, la largeur du panneau est verrouillée : la poignée du splitter
+        ne doit ni s'illuminer au survol ni afficher un curseur de redimensionnement
+        pour une action impossible."""
+        h = self.splitter.handle(1)
+        if h is not None:
+            h.setEnabled(on)
+            h.setCursor(Qt.SplitHCursor if on else Qt.ArrowCursor)
 
     def _rebuild_grid(self, anchor_id=None, fallback_id=None):
         """Sync the card grid with self.pages, keeping the scroll position.
@@ -1706,12 +1798,12 @@ class MainWindow(QMainWindow):
 
     def _refresh_preview(self):
         """Keep the preview's 'Page X / Y' honest after pages moved or went away."""
-        if not self.preview.isVisible() or self._preview_page_id is None:
+        if not self._preview_open or self._preview_page_id is None:
             return
         idx = next((i for i, p in enumerate(self.pages)
                     if p.id == self._preview_page_id), None)
         if idx is None:
-            self.preview.hide(); self._preview_page_id = None
+            self._collapse_preview(); self._preview_page_id = None
             return
         self.preview.update_info(idx, len(self.pages))
 
@@ -1777,7 +1869,7 @@ class MainWindow(QMainWindow):
         self.mode=m
         if m=='read':
             self.stack.setCurrentIndex(2); self.rnav.show()
-            self.add_btn.hide(); self.exp_sel_btn.hide(); self.del_sel_btn.hide(); self.preview.hide()
+            self.add_btn.hide(); self.exp_sel_btn.hide(); self.del_sel_btn.hide()
             # Where to land: the page just clicked in the grid, else wherever the
             # reader already was - it no longer restarts from page 1 every time.
             target = self._reader_target or self.reader.current_page_id()
@@ -1801,7 +1893,7 @@ class MainWindow(QMainWindow):
     def insert_files_at(self, paths, at_index, msg_verb="insérée"):
         """Insert PDF files at a specific index."""
         QApplication.setOverrideCursor(Qt.WaitCursor)
-        count=0; errors=[]; first_id=None
+        count=0; errors=[]; starts=[]
         try:
             for path in paths:
                 try:
@@ -1816,13 +1908,20 @@ class MainWindow(QMainWindow):
                         pd=PageData(source,i,f"{name} – p.{i+1}",QPixmap.fromImage(img),page.rect)
                         del img
                         self.pages.insert(at_index+count, pd)
-                        if first_id is None: first_id = pd.id
+                        if i == 0: starts.append(pd.id)   # début de ce PDF-là
                         count+=1
                 except Exception as e:
                     errors.append(f"{os.path.basename(path)}: {e}")
             if count:
                 self._reader_dirty = True
-                self._rebuild_grid(anchor_id=first_id); self._update_state()
+                # Liseré bleu sur la première page de chaque PDF inséré : c'est le
+                # repère qui montre où commence ce qui vient d'être ajouté.
+                if starts:
+                    self.selected_ids = set(starts)
+                    self._last_selected_id = starts[0]
+                # Aucune ancre forcée : la vue ne saute pas sur l'insertion, elle
+                # garde les pages déjà à l'écran exactement où elles sont.
+                self._rebuild_grid(); self._update_state()
                 self.toast.show(f"{count} page(s) {msg_verb}(s).", 'success')
             for err in errors:
                 self.toast.show(f"Erreur: {err}", 'error')
@@ -1856,10 +1955,10 @@ class MainWindow(QMainWindow):
             p = self.pages[clicked_idx]
             self._preview_page_id = page_id
             self._reader_target = page_id
-            self.preview.set_page(p, clicked_idx, len(self.pages), self.textboxes)
-            if not self.preview.isVisible():
-                self.preview.show()
-                self.splitter.setSizes([self.splitter.width()-380, 380])
+            # L'aperçu ne s'impose plus au clic : il suit la sélection uniquement
+            # s'il a été ouvert depuis la poignée de droite.
+            if self._preview_open:
+                self.preview.set_page(p, clicked_idx, len(self.pages), self.textboxes)
 
     def _sync_card_selection(self):
         for i in range(self.grid_layout.count()):
@@ -1876,14 +1975,17 @@ class MainWindow(QMainWindow):
         before_count = sum(1 for p in self.pages[:target_idx] if p.id not in src_ids)
         self.pages = remaining[:before_count] + moving + remaining[before_count:]
         self._reader_dirty = True
-        self._rebuild_grid(anchor_id=moving[0].id)
+        # Comme pour l'insertion : on repositionne les pages sans bouger la vue.
+        self._rebuild_grid()
 
     def _drop_pages(self, ids, first_idx):
         """Remove pages by id and return the id of the page to keep in view."""
         # Hide the preview *before* rebuilding: doing it after changes the splitter
         # width, which reflows the grid and reclamps the scroll position.
         if self._preview_page_id in ids:
-            self.preview.hide(); self._preview_page_id = None
+            if self._preview_open:
+                self._collapse_preview()
+            self._preview_page_id = None
         self.pages=[p for p in self.pages if p.id not in ids]
         self.textboxes=[t for t in self.textboxes if t.page_id not in ids]
         if self._last_selected_id in ids: self._last_selected_id = None
@@ -2023,7 +2125,9 @@ class MainWindow(QMainWindow):
         self.rnav.adjustSize()
         self.rnav.move((self.width()-self.rnav.width())//2, self.height()-self.rnav.height()-28); self.rnav.raise_()
 
-    def _close_preview(self): self.preview.hide(); self._preview_page_id = None
+    def _close_preview(self):
+        # La page reste mémorisée : rouvrir depuis la poignée y revient.
+        self._collapse_preview()
 
     def _pos_tbprops(self):
         self.tbprops.adjustSize()
