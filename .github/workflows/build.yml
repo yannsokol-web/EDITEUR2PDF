@@ -26,21 +26,24 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y
 
-      - name: Create config.ini for build
-        run: |
-          @"
-          [update]
-          installer_path =
-          "@ | Out-File -Encoding utf8 config.ini
-
       - name: Build with PyInstaller
         run: python -m PyInstaller --noconfirm EditeurPDF.spec
 
       - name: Build installer with Inno Setup
         run: iscc setup.iss
 
+      # The app refuses to run an installer it cannot verify, so the release body
+      # must carry the hash. Generated notes are appended to this body by GitHub.
+      - name: Compute installer SHA-256
+        id: hash
+        run: |
+          $h = (Get-FileHash installer_output/InstallEditeurPDF.exe -Algorithm SHA256).Hash.ToLower()
+          "sha256=$h" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: installer_output/InstallEditeurPDF.exe
           generate_release_notes: true
+          body: |
+            SHA256: ${{ steps.hash.outputs.sha256 }}

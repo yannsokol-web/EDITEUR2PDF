@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('logoediteurpdf.ico', '.'), ('config.ini', '.')]
+datas = [('logoediteurpdf.ico', '.')]
 binaries = []
 hiddenimports = ['pymupdf']
 tmp_ret = collect_all('pymupdf')

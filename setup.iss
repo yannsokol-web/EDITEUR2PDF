@@ -1,7 +1,7 @@
 [Setup]
 AppName=Editeur PDF
-AppVersion=1.5
-AppVerName=Editeur PDF 1.5
+AppVersion=1.6
+AppVerName=Editeur PDF 1.6
 AppPublisher=Yann Sokol
 AppCopyright=Copyright (c) 2026 Yann Sokol. Tous droits réservés.
 DefaultDirName={localappdata}\EditeurPDF
@@ -25,7 +25,6 @@ Name: "french"; MessagesFile: "compiler:Languages\French.isl"
 Source: "dist\EditeurPDF\EditeurPDF.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\EditeurPDF\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "logoediteurpdf.ico"; DestDir: "{app}"; Flags: ignoreversion
-Source: "config.ini"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{userdesktop}\Editeur PDF"; Filename: "{app}\EditeurPDF.exe"; IconFilename: "{app}\logoediteurpdf.ico"; WorkingDir: "{app}"

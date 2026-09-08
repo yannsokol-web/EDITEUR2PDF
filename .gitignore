@@ -5,4 +5,3 @@ dist/
 installer_output/
 .claude/
 skills-lock.json
-config.ini

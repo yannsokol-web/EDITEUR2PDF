@@ -16,7 +16,7 @@ Editeur PDF de bureau construit avec PySide6 et PyMuPDF. Permet de visualiser, r
 
 Un seul fichier suffit : **`InstallEditeurPDF.exe`**
 
-1. Recuperer `InstallEditeurPDF.exe` depuis le serveur partage
+1. Recuperer `InstallEditeurPDF.exe` depuis la derniere [GitHub Release](https://github.com/yannsokol-web/EDITEUR2PDF/releases/latest)
 2. Double-cliquer dessus
 3. L'installation se fait automatiquement (aucun prerequis, pas besoin de Python)
 4. Un raccourci **Editeur PDF** apparait sur le Bureau
