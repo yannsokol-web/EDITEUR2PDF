@@ -8,7 +8,7 @@ Toute reproduction, distribution, modification ou utilisation non autorisée
 de ce logiciel, en tout ou en partie, est strictement interdite sans
 l'autorisation écrite préalable de l'auteur.
 """
-VERSION = "1.7"
+VERSION = "1.8"
 UPDATE_URL = "https://api.github.com/repos/yannsokol-web/EDITEUR2PDF/releases/latest"
 
 import sys, os, uuid, subprocess, threading, tempfile, json, hashlib, logging, re  # subprocess: used by _on_update_downloaded for auto-update
@@ -1484,6 +1484,8 @@ class MainWindow(QMainWindow):
         self._preview_open = False
         self._pending_grid_anchor = None
         self._export_workers = set()
+        # Dossier du premier PDF chargé : c'est là que s'ouvrent les boîtes d'export.
+        self._export_dir = None
         self._build_toolbar(); self._build_central(); self._build_reader_nav(); self._build_tb_props()
         self.toast = ToastManager(self)
         self._update_state()
@@ -1901,6 +1903,8 @@ class MainWindow(QMainWindow):
                     source=PdfSource(data)
                     _pinned_doc_keys.add(source.hash)
                     doc=get_cached_doc(source); name=os.path.basename(path)
+                    if self._export_dir is None:
+                        self._export_dir = os.path.dirname(os.path.abspath(path))
                     for i in range(len(doc)):
                         page=doc[i]
                         pix=page.get_pixmap(matrix=fitz.Matrix(1.0,1.0),alpha=False)
@@ -1993,7 +1997,10 @@ class MainWindow(QMainWindow):
         self.selected_ids -= ids
         self._cleanup_cache()
         self._reader_dirty = True
-        if not self.pages: return None
+        if not self.pages:
+            # Espace de travail vidé : le prochain PDF chargé redéfinit le dossier d'export.
+            self._export_dir = None
+            return None
         return self.pages[min(first_idx, len(self.pages) - 1)].id
 
     def _delete_page(self, pid):
@@ -2024,21 +2031,25 @@ class MainWindow(QMainWindow):
         files,_=QFileDialog.getOpenFileNames(self, "Sélectionner des PDFs","","PDF (*.pdf)")
         if files: self.load_files(files)
 
+    def _export_default(self, filename):
+        """Chemin proposé à l'export : dans le dossier du premier PDF chargé."""
+        return os.path.join(self._export_dir, filename) if self._export_dir else filename
+
     def _export_pdf(self):
         if not self.pages: return
-        path,_=QFileDialog.getSaveFileName(self,"Exporter","edited.pdf","PDF (*.pdf)")
+        path,_=QFileDialog.getSaveFileName(self,"Exporter",self._export_default("edited.pdf"),"PDF (*.pdf)")
         if path: self._do_export(self.pages,path)
 
     def _export_selection(self):
         sel=[p for p in self.pages if p.id in self.selected_ids]
         if not sel: return
-        path,_=QFileDialog.getSaveFileName(self,"Exporter la sélection","selection.pdf","PDF (*.pdf)")
+        path,_=QFileDialog.getSaveFileName(self,"Exporter la sélection",self._export_default("selection.pdf"),"PDF (*.pdf)")
         if path: self._do_export(sel,path)
 
     def _export_current(self):
         if not self.pages: return
         p=self.pages[self.reader.cur]
-        path,_=QFileDialog.getSaveFileName(self,"Exporter",f"page-{self.reader.cur+1}.pdf","PDF (*.pdf)")
+        path,_=QFileDialog.getSaveFileName(self,"Exporter",self._export_default(f"page-{self.reader.cur+1}.pdf"),"PDF (*.pdf)")
         if path: self._do_export([p],path)
 
     def _export_range(self):
@@ -2046,7 +2057,7 @@ class MainWindow(QMainWindow):
         dlg=ExportRangeDialog(len(self.pages),self)
         if dlg.exec()==QDialog.Accepted:
             a,b=dlg.get_range(); s,e=min(a,b)-1,max(a,b)
-            path,_=QFileDialog.getSaveFileName(self,"Exporter",f"pages-{s+1}-{e}.pdf","PDF (*.pdf)")
+            path,_=QFileDialog.getSaveFileName(self,"Exporter",self._export_default(f"pages-{s+1}-{e}.pdf"),"PDF (*.pdf)")
             if path: self._do_export(self.pages[s:e],path)
 
     def _do_export(self, plist, path):
